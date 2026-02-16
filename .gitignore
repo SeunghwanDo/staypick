@@ -1,0 +1,25 @@
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ---- Virtualenv (DO NOT COMMIT) ----
+.venv/
+
+# ---- Secrets (DO NOT COMMIT) ----
+.env
+
+# ---- Streamlit / cache ----
+.streamlit/
+.cache/
+
+# ---- Local logs / artifacts ----
+data/ads_events*.csv
+data/*_backup.*
+outputs/
+*.log
+
+# ---- OS ----
+.DS_Store
+Thumbs.db

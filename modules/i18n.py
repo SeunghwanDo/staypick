@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Optional
+
+
+SUPPORTED_LANGS = ["ko", "en", "ja", "es"]
+
+
+def normalize_lang(lang: str) -> str:
+    lang = (lang or "").strip().lower()
+    if not lang:
+        return "ko"
+    # Accept 'en-US' => 'en'
+    if "-" in lang:
+        lang = lang.split("-", 1)[0]
+    if lang in SUPPORTED_LANGS:
+        return lang
+    return "ko"
+
+
+def lang_display_name(code: str) -> str:
+    code = normalize_lang(code)
+    return {
+        "ko": "한국어",
+        "en": "English",
+        "ja": "日本語",
+        "es": "Español",
+    }.get(code, "한국어")
+
+
+# Minimal-but-useful UI strings.
+# Any missing key will fall back to Korean.
+UI: Dict[str, Dict[str, str]] = {
+    "ko": {
+        "sidebar_title": "StayPick",
+        "sidebar_sub": "처음 온 사람도 ‘재밌겠다’ — 도파민 피드 + 3초 요약",
+        "api_key": "🔑 OPENAI_API_KEY",
+        "admin_toggle": "🛠 운영자 모드",
+        "exp_user": "⚙️ 사용자 설정",
+        "exp_make": "✍️ 만들기 설정",
+        "exp_make_advanced": "🧠 고급(독자/포맷/톤)",
+        "exp_admin": "🧪 운영자 설정(데이터/모델)",
+        "toggle_ads": "📣 스폰서/광고 표시",
+        "toggle_metrics": "📊 방문/체류 지표 표시",
+        "toggle_auto_summary": "⚡ 상세 보기 자동 3초 요약",
+        "teaser_mode": "미리보기 스타일",
+        "teaser_opt_snippet": "내용 일부(기본)",
+        "teaser_opt_ai": "AI 한줄요약(클릭 유도)",
+        "persona": "독자 타입",
+        "output_format": "결과물",
+        "tone": "톤/추가 지시(선택)",
+        "output_lang": "🌍 출력 언어",
+        "header_pill": "실시간 도파민 피드",
+        "header_caption": "체류시간/방문으로 '진짜 관심'을 뽑아 — 요약하고, 새 콘텐츠로 재가공합니다.",
+        "tab_feed": "🏠 피드",
+        "tab_make": "✍️ 만들기",
+        "tab_data": "📥 데이터(운영자)",
+        "tab_insights": "🔎 인사이트(운영자)",
+        "tab_sponsor": "💰 스폰서(운영자)",
+        "tab_global": "🌍 글로벌/SEO(운영자)",
+        "realtime_best": "🔥 실시간 베스트",
+        "sponsor": "📣 스폰서",
+        "sponsor_reco": "📣 스폰서 추천",
+        "category_top": "📌 카테고리 TOP 10",
+        "hot": "⚡ HOT 랭킹",
+        "keywords": "🔎 인기 키워드",
+        "saved": "📌 저장한 목록",
+        "dialog_title": "📌 콘텐츠 상세 + 3초 요약",
+        "btn_view": "보기",
+        "btn_open": "열기",
+        "btn_save": "저장",
+        "btn_make": "새 콘텐츠 생성",
+        "btn_export_html": "📄 SEO HTML 내보내기",
+        "lang_selector": "🌍 화면 언어",
+        "lang_auto": "자동(브라우저)",
+        "age_group": "👤 연령/라이프스테이지",
+        "age_general": "전체(기본)",
+        "age_elem": "초등학생",
+        "age_mid": "중학생",
+        "age_high": "고등학생",
+        "age_uni": "대학생",
+        "age_20s": "20대",
+        "age_30s": "30대",
+        "label_hook": "훅(클릭 유도)",
+        "label_local_title": "현지화 제목",
+        "label_source_title": "원문 제목",
+        "api_key_hidden": "서버에 설정된 API 키를 사용 중입니다. (사용자에게 노출되지 않음)",
+        "api_key_help": "키가 없으면 ‘3초 요약/만들기’가 동작하지 않습니다.",
+    },
+    "en": {
+        "sidebar_sub": "Even first-timers go ‘this looks fun’ — dopamine feed + 3-sec summary",
+        "api_key": "🔑 OPENAI_API_KEY",
+        "admin_toggle": "🛠 Admin mode",
+        "exp_user": "⚙️ User settings",
+        "exp_make": "✍️ Creation settings",
+        "exp_make_advanced": "🧠 Advanced (audience/format/tone)",
+        "exp_admin": "🧪 Admin settings (data/model)",
+        "toggle_ads": "📣 Show sponsors/ads",
+        "toggle_metrics": "📊 Show engagement metrics",
+        "toggle_auto_summary": "⚡ Auto 3-sec summary on open",
+        "teaser_mode": "Preview style",
+        "teaser_opt_snippet": "Content snippet (default)",
+        "teaser_opt_ai": "AI one-liner (clickbait-ish)",
+        "persona": "Audience",
+        "output_format": "Output format",
+        "tone": "Tone / extra instructions (optional)",
+        "output_lang": "🌍 Output language",
+        "header_pill": "Realtime dopamine feed",
+        "header_caption": "We pick what people *actually* linger on, summarize it, and repurpose into new content.",
+        "tab_feed": "🏠 Feed",
+        "tab_make": "✍️ Create",
+        "tab_data": "📥 Data (Admin)",
+        "tab_insights": "🔎 Insights (Admin)",
+        "tab_sponsor": "💰 Sponsors (Admin)",
+        "tab_global": "🌍 Global/SEO (Admin)",
+        "realtime_best": "🔥 Trending now",
+        "sponsor": "📣 Sponsors",
+        "sponsor_reco": "📣 Sponsored",
+        "category_top": "📌 Category Top 10",
+        "hot": "⚡ HOT ranking",
+        "keywords": "🔎 Popular keywords",
+        "saved": "📌 Saved",
+        "dialog_title": "📌 Details + 3-sec summary",
+        "btn_view": "View",
+        "btn_open": "Open",
+        "btn_save": "Save",
+        "btn_make": "Generate",
+        "btn_export_html": "📄 Export SEO HTML",
+        "lang_selector": "🌍 UI language",
+        "lang_auto": "Auto (browser)",
+        "age_group": "👤 Age / lifestage",
+        "age_general": "General (default)",
+        "age_elem": "Elementary",
+        "age_mid": "Middle school",
+        "age_high": "High school",
+        "age_uni": "College",
+        "age_20s": "20s",
+        "age_30s": "30s",
+        "label_hook": "Hook (click)",
+        "label_local_title": "Localized title",
+        "label_source_title": "Source title",
+        "api_key_hidden": "Using server API key (hidden from users).",
+        "api_key_help": "Without a key, ‘3-sec summary / Generate’ won’t work.",
+    },
+    "ja": {
+        "sidebar_sub": "初めてでも『面白そう』— ドーパミンフィード + 3秒要約",
+        "admin_toggle": "🛠 管理者モード",
+        "exp_user": "⚙️ ユーザー設定",
+        "exp_make": "✍️ 作成設定",
+        "exp_make_advanced": "🧠 詳細(読者/形式/トーン)",
+        "exp_admin": "🧪 管理者設定(データ/モデル)",
+        "toggle_ads": "📣 スポンサー/広告を表示",
+        "toggle_metrics": "📊 指標を表示",
+        "toggle_auto_summary": "⚡ 開いたら自動で3秒要約",
+        "teaser_mode": "プレビュー",
+        "teaser_opt_snippet": "本文の一部(既定)",
+        "teaser_opt_ai": "AI一言(クリック誘導)",
+        "persona": "読者タイプ",
+        "output_format": "出力形式",
+        "tone": "トーン/追加指示(任意)",
+        "output_lang": "🌍 出力言語",
+        "header_pill": "リアルタイム ドーパミンフィード",
+        "header_caption": "滞在時間/訪問で『本当の関心』を抽出し、要約し、新しいコンテンツに再構成します。",
+        "tab_feed": "🏠 フィード",
+        "tab_make": "✍️ 作る",
+        "tab_data": "📥 データ(管理者)",
+        "tab_insights": "🔎 インサイト(管理者)",
+        "tab_sponsor": "💰 スポンサー(管理者)",
+        "tab_global": "🌍 グローバル/SEO(管理者)",
+        "realtime_best": "🔥 リアルタイムベスト",
+        "sponsor": "📣 スポンサー",
+        "sponsor_reco": "📣 スポンサーおすすめ",
+        "category_top": "📌 カテゴリ TOP 10",
+        "hot": "⚡ HOT ランキング",
+        "keywords": "🔎 人気キーワード",
+        "saved": "📌 保存一覧",
+        "dialog_title": "📌 詳細 + 3秒要約",
+        "btn_view": "見る",
+        "btn_open": "開く",
+        "btn_save": "保存",
+        "btn_make": "生成",
+        "btn_export_html": "📄 SEO HTMLを書き出す",
+        "lang_selector": "🌍 表示言語",
+        "lang_auto": "自動(ブラウザ)",
+        "age_group": "👤 年齢/ライフステージ",
+        "age_general": "全体(既定)",
+        "age_elem": "小学生",
+        "age_mid": "中学生",
+        "age_high": "高校生",
+        "age_uni": "大学生",
+        "age_20s": "20代",
+        "age_30s": "30代",
+        "label_hook": "フック(クリック誘導)",
+        "label_local_title": "ローカライズタイトル",
+        "label_source_title": "元のタイトル",
+        "api_key_hidden": "サーバーのAPIキーを使用中（ユーザー非表示）。",
+        "api_key_help": "キーがないと「3秒要約/生成」は動きません。",
+    },
+    "es": {
+        "sidebar_sub": "Incluso la primera vez: ‘se ve divertido’ — feed + resumen de 3s",
+        "admin_toggle": "🛠 Modo admin",
+        "exp_user": "⚙️ Ajustes",
+        "exp_make": "✍️ Crear",
+        "exp_make_advanced": "🧠 Avanzado (audiencia/formato/tono)",
+        "exp_admin": "🧪 Admin (datos/modelo)",
+        "toggle_ads": "📣 Mostrar anuncios",
+        "toggle_metrics": "📊 Mostrar métricas",
+        "toggle_auto_summary": "⚡ Resumen 3s automático al abrir",
+        "teaser_mode": "Vista previa",
+        "teaser_opt_snippet": "Fragmento (por defecto)",
+        "teaser_opt_ai": "Frase AI (enganche)",
+        "persona": "Audiencia",
+        "output_format": "Formato",
+        "tone": "Tono / instrucciones (opcional)",
+        "output_lang": "🌍 Idioma de salida",
+        "header_pill": "Feed en tiempo real",
+        "header_caption": "Elegimos lo que la gente realmente lee, lo resumimos y lo reutilizamos.",
+        "tab_feed": "🏠 Feed",
+        "tab_make": "✍️ Crear",
+        "tab_data": "📥 Datos (Admin)",
+        "tab_insights": "🔎 Insights (Admin)",
+        "tab_sponsor": "💰 Sponsors (Admin)",
+        "tab_global": "🌍 Global/SEO (Admin)",
+        "realtime_best": "🔥 En tendencia",
+        "sponsor": "📣 Sponsors",
+        "sponsor_reco": "📣 Patrocinado",
+        "category_top": "📌 Top 10 por categoría",
+        "hot": "⚡ HOT ranking",
+        "keywords": "🔎 Palabras clave",
+        "saved": "📌 Guardados",
+        "dialog_title": "📌 Detalles + resumen de 3s",
+        "btn_view": "Ver",
+        "btn_open": "Abrir",
+        "btn_save": "Guardar",
+        "btn_make": "Generar",
+        "btn_export_html": "📄 Exportar SEO HTML",
+        "lang_selector": "🌍 Idioma UI",
+        "lang_auto": "Auto (navegador)",
+        "age_group": "👤 Edad / etapa",
+        "age_general": "General (por defecto)",
+        "age_elem": "Primaria",
+        "age_mid": "Secundaria (media)",
+        "age_high": "Bachillerato",
+        "age_uni": "Universidad",
+        "age_20s": "20s",
+        "age_30s": "30s",
+        "label_hook": "Gancho (clic)",
+        "label_local_title": "Título localizado",
+        "label_source_title": "Título original",
+        "api_key_hidden": "Usando la API key del servidor (oculta).",
+        "api_key_help": "Sin una key, ‘resumen 3s / Generar’ no funciona.",
+    },
+}
+
+
+@dataclass
+class Translator:
+    lang: str = "ko"
+
+    def t(self, key: str, default: Optional[str] = None) -> str:
+        lang = normalize_lang(self.lang)
+        if key in UI.get(lang, {}):
+            return UI[lang][key]
+        # fallback to Korean
+        if key in UI.get("ko", {}):
+            return UI["ko"][key]
+        return default or key
+
+
+def get_translator(lang: str) -> Translator:
+    return Translator(lang=normalize_lang(lang))

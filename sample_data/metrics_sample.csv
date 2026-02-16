@@ -1,0 +1,6 @@
+category,title,url,visits,avg_dwell_sec
+콘텐츠 전략,OpenAI Developer Quickstart,https://developers.openai.com/api/docs/quickstart/,3200,180
+마케팅,OpenAI Embeddings Guide,https://developers.openai.com/api/docs/guides/embeddings/,2700,210
+트렌드/리서치,OpenAI Rate Limits Guide,https://developers.openai.com/api/docs/guides/rate-limits/,1500,160
+퍼스널라이제이션,Wikipedia - OpenAI,https://en.wikipedia.org/wiki/OpenAI,4100,95
+거버넌스,Python Streamlit Docs,https://docs.streamlit.io/,1900,140

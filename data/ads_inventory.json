@@ -1,0 +1,58 @@
+[
+  {
+    "id": "sp_001",
+    "brand": "StayPick Sponsor",
+    "hook": "🔥 월급날 이후도 통장 살아남는 법",
+    "title": "월급 자동이체만 바꿔도 돈이 남는다",
+    "description": "초보도 바로 적용하는 돈 새는 구멍 막는 5가지 루틴",
+    "cta": "무료 체크리스트 받기",
+    "landing_url": "https://example.com/finance-checklist",
+    "categories": ["재테크", "생활꿀팁"],
+    "keywords": ["월급", "저축", "자동이체", "예산"],
+    "pricing": {"type": "CPC", "cpc_krw": 120},
+    "image_url": "",
+    "active": true
+  },
+  {
+    "id": "sp_002",
+    "brand": "TravelMate",
+    "hook": "🧳 2박3일 코스, 30초면 끝",
+    "title": "2박 3일 국내여행, 코스 짜기 귀찮다면",
+    "description": "취향/예산 넣으면 코스+맛집+동선까지 자동으로",
+    "cta": "여행 코스 만들기",
+    "landing_url": "https://example.com/travel",
+    "categories": ["여행"],
+    "keywords": ["국내", "코스", "맛집", "동선"],
+    "pricing": {"type": "CPC", "cpc_krw": 100},
+    "image_url": "",
+    "active": true
+  },
+  {
+    "id": "sp_003",
+    "brand": "GamePass",
+    "hook": "🎮 오늘 밤 뭐하지? 답 여기",
+    "title": "요즘 밤새는 게임? 한 달만 체험해보자",
+    "description": "신작+인기작을 한 번에. 첫 달 1,000원 이벤트",
+    "cta": "체험 시작",
+    "landing_url": "https://example.com/game",
+    "categories": ["게임"],
+    "keywords": ["신작", "랭크", "멀티", "파티"],
+    "pricing": {"type": "CPC", "cpc_krw": 80},
+    "image_url": "",
+    "active": true
+  },
+  {
+    "id": "sp_004",
+    "brand": "CleanHome",
+    "hook": "🧼 냄새난 전자레인지, 30초 컷",
+    "title": "전자레인지 냄새 30초 컷",
+    "description": "집에 있는 재료로 냄새·기름때 정리",
+    "cta": "방법 보기",
+    "landing_url": "https://example.com/clean",
+    "categories": ["생활꿀팁"],
+    "keywords": ["전자레인지", "냄새", "청소"],
+    "pricing": {"type": "CPC", "cpc_krw": 60},
+    "image_url": "",
+    "active": true
+  }
+]
