@@ -251,6 +251,22 @@ div.stButton > button {
   background: #fff;
   padding: 10px 12px;
 }
+.cat-top-card {
+  border: 1px solid rgba(49, 51, 63, 0.12);
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 3px 10px rgba(20, 20, 40, 0.05);
+}
+.cat-top-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+}
+.cat-top-body {
+  padding: 8px 10px;
+}
 
 /* Mobile: stack columns to 1 */
 @media (max-width: 900px) {
@@ -1900,7 +1916,7 @@ with tab_feed:
                     st.session_state["shorts_show_n"] = short_show + 10
                     st.rerun()
 
-        st.subheader(t("realtime_best"))
+        st.subheader("Longform")
         long_items = [r for r in df_overall.to_dict(orient="records") if not _is_shorts_item(r)]
         long_show = int(st.session_state.get("long_show_n", 9) or 9)
         best = long_items[:long_show]
@@ -1994,101 +2010,61 @@ with tab_feed:
                 st.caption("※ 스폰서는 광고입니다")
 
         st.divider()
-
-        # Category list section
-        st.subheader(t("category_top"))
-        selected_cat = st.selectbox("카테고리", options=categories, index=0)
-        cat_items = topk_cat_df[topk_cat_df["category"] == selected_cat].copy()
-        cat_items = cat_items.sort_values(["portal_score", "engagement_score", "visits", "avg_dwell_sec"], ascending=False).head(10)
-
-        if cat_items.empty:
-            st.caption("이 카테고리에 표시할 콘텐츠가 없습니다.")
-        else:
-            inline_ad = None
-            if show_ads:
-                picked = select_ads(
-                    ads_inv,
-                    context_categories=[selected_cat, "전체"],
-                    context_keywords=ctx_keywords,
-                    n=1,
-                    seed=11,
-                )
-                inline_ad = picked[0] if picked else None
-
-            for rank, row in enumerate(cat_items.to_dict(orient="records"), start=1):
-                # insert a native sponsored card around the middle
-                if show_ads and inline_ad is not None and rank == 4:
-                    render_ad(inline_ad, placement="inline_category", content_category=selected_cat)
-
-                source_title = (row.get("title") or "").strip() or row.get("url")
-                url = row.get("url", "")
-                content = (row.get("content") or "").strip()
-                cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-                s = get_cached_summary(cache, url)
-                display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
-                if teaser_mode == "ai" and s:
-                    teaser = (s.get("hook") or s.get("one_liner") or "")
-                else:
-                    teaser = snippet_from_content(content, 120)
-
-                emoji = emoji_for_category(selected_cat)
-                thumb_url = str(row.get("thumbnail_url", "") or "").strip()
-                if thumb_url:
-                    thumb_style = f"background-image:url('{html.escape(thumb_url)}'); background-size:cover; background-position:center;"
-                    thumb_text = ""
-                else:
-                    thumb_style = gradient_for_seed(url)
-                    thumb_text = html.escape(emoji)
-                yt_meta = " · ".join(
-                    [
-                        str(row.get("channel_title", "") or "").strip(),
-                        _relative_time_text(str(row.get("published_at", "") or "")),
-                        _views_text(row.get("visits", 0)),
-                    ]
-                ).strip(" ·")
-                chips_html = chips_to_html([f"{emoji} {selected_cat}", f"TOP {rank}"], max_items=2)
-                thumb_block = (
-                    f"<img class='yt-thumb-img' src='{html.escape(thumb_url)}' alt='thumbnail'/>"
-                    if thumb_url
-                    else f"<div class='sp-thumb' style='{thumb_style}; width:100%; height:100%; border-radius:0;'>{thumb_text}</div>"
-                )
-
-                st.markdown(
-                    f"""
-<div class="yt-card">
-  <div class="yt-thumb-wrap">{thumb_block}</div>
-  <div class="yt-body">
-      <div class="yt-topline"><span class="rank-badge">TOP {rank}</span><span class="sp-kicker">{html.escape(selected_cat)}</span></div>
-      <p class="yt-title">{html.escape(display_title)}</p>
-      <div class="yt-channel-line"><span class="yt-channel-dot"></span><span class="yt-meta">{html.escape(yt_meta)}</span></div>
-      <div class="yt-sub">{html.escape(teaser or '미리보기 없음 · 눌러서 3초 요약')}</div>
-      <div class="sp-chips">{chips_html}</div>
-    </div>
+        st.subheader("카테고리 TOP10")
+        cat_cols = st.columns(3, gap="small")
+        for ci, selected_cat in enumerate(categories[:6], start=1):
+            cat_items = topk_cat_df[topk_cat_df["category"] == selected_cat].copy()
+            cat_items = cat_items.sort_values(["portal_score", "engagement_score", "visits", "avg_dwell_sec"], ascending=False).head(10)
+            if cat_items.empty:
+                continue
+            top1 = cat_items.iloc[0].to_dict()
+            top1_url = str(top1.get("url", "") or "").strip()
+            top1_title = str(top1.get("title", "") or top1_url).strip()
+            top1_thumb = str(top1.get("thumbnail_url", "") or "").strip()
+            top1_meta = " · ".join(
+                [
+                    str(top1.get("channel_title", "") or "").strip(),
+                    _views_text(top1.get("visits", 0)),
+                ]
+            ).strip(" ·")
+            with cat_cols[(ci - 1) % 3]:
+                st.markdown(f"**{emoji_for_category(selected_cat)} {selected_cat}**")
+                if top1_thumb:
+                    st.markdown(
+                        f"""
+<div class="cat-top-card">
+  <img class="cat-top-thumb" src="{html.escape(top1_thumb)}" alt="cat top thumbnail"/>
+  <div class="cat-top-body">
+    <div class="rank-badge">TOP 1</div>
+    <div class="yt-title">{html.escape(top1_title[:56] + ('...' if len(top1_title) > 56 else ''))}</div>
+    <div class="yt-meta">{html.escape(top1_meta)}</div>
+  </div>
 </div>
 """,
-                    unsafe_allow_html=True,
-                )
-
-                if show_metrics:
-                    st.caption(f"방문 {float(row.get('visits', 0)):.0f} · 체류 {float(row.get('avg_dwell_min', 0)):.2f}분")
-
-                if st.button("시청", key=f"cat_open_{selected_cat}_{rank}"):
-                    open_item(url)
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption(top1_title)
+                if st.button("TOP1 시청", key=f"cat_top1_{selected_cat}_{ci}"):
+                    open_item(top1_url)
+                with st.expander(f"{selected_cat} TOP10 보기", expanded=False):
+                    for rank, row in enumerate(cat_items.to_dict(orient="records"), start=1):
+                        url = str(row.get("url", "") or "").strip()
+                        title_txt = str(row.get("title", "") or url).strip()
+                        meta_txt = " · ".join(
+                            [
+                                str(row.get("channel_title", "") or "").strip(),
+                                _views_text(row.get("visits", 0)),
+                            ]
+                        ).strip(" ·")
+                        b1, b2 = st.columns([4.4, 1.1])
+                        with b1:
+                            if st.button(f"{rank}. {title_txt[:48]}{'...' if len(title_txt) > 48 else ''}", key=f"cat_top10_open_{selected_cat}_{rank}_{ci}"):
+                                open_item(url)
+                        with b2:
+                            st.caption(meta_txt if meta_txt else "-")
 
     with side_col:
-        if show_ads:
-            st.subheader(t("sponsor"))
-            sponsor_side = select_ads(
-                ads_inv,
-                context_categories=ctx_categories,
-                context_keywords=ctx_keywords,
-                n=2,
-                seed=13,
-            )
-            for ad in sponsor_side:
-                render_ad(ad, placement="sidebar")
-            st.divider()
-
         st.subheader(t("hot"))
         hot = df_overall.head(10).to_dict(orient="records")
         for i, row in enumerate(hot, start=1):
@@ -2122,6 +2098,19 @@ with tab_feed:
                         st.rerun()
         else:
             st.caption("키워드를 만들 데이터가 부족해요.")
+
+        if show_ads:
+            st.divider()
+            st.subheader(t("sponsor"))
+            sponsor_side = select_ads(
+                ads_inv,
+                context_categories=ctx_categories,
+                context_keywords=ctx_keywords,
+                n=2,
+                seed=13,
+            )
+            for ad in sponsor_side:
+                render_ad(ad, placement="sidebar")
 
         st.divider()
         st.subheader(t("saved"))
