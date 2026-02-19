@@ -6,9 +6,10 @@ import re
 import html
 import io
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote_plus
 
 import pandas as pd
 import streamlit as st
@@ -21,6 +22,7 @@ from modules.cluster import cluster_summaries
 from modules.ads import ensure_ads_storage, load_ads, save_ads, select_ads, log_event, Ad
 from modules.i18n import get_translator, normalize_lang
 from modules.seo import SEOPage, render_html, slugify
+from modules.youtube import fetch_youtube_videos
 
 load_dotenv()
 
@@ -145,6 +147,78 @@ st.markdown(PORTAL_CSS, unsafe_allow_html=True)
 # ---------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEMO_CSV_PATH = os.path.join(APP_DIR, "sample_data", "metrics_sample_fun_with_content.csv")
+SUBSCRIPTION_STATE_PATH = os.path.join(APP_DIR, "data", "subscription_state.json")
+DEFAULT_YT_QUERY_GROUPS: Dict[str, List[str]] = {
+    "게임": ["게임 추천", "스팀 게임", "모바일 게임"],
+    "연애/썰": ["연애 썰", "썸", "이별"],
+    "재테크": ["재테크", "주식 입문", "절약"],
+    "생활꿀팁": ["생활 꿀팁", "청소 꿀팁", "요리 꿀팁"],
+}
+
+
+def _save_subscription_state() -> None:
+    try:
+        os.makedirs(os.path.dirname(SUBSCRIPTION_STATE_PATH), exist_ok=True)
+        data = {
+            "plan_tier": st.session_state.get("plan_tier", "free"),
+            "billing_cycle": st.session_state.get("billing_cycle", "monthly"),
+            "trial_started_at": st.session_state.get("trial_started_at"),
+        }
+        with open(SUBSCRIPTION_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def subscription_snapshot() -> Dict[str, Any]:
+    trial_months = 6
+    started = st.session_state.get("trial_started_at")
+    if not started:
+        started = datetime.now().date().isoformat()
+        st.session_state["trial_started_at"] = started
+    try:
+        started_dt = datetime.fromisoformat(str(started)).date()
+    except Exception:
+        started_dt = datetime.now().date()
+        st.session_state["trial_started_at"] = started_dt.isoformat()
+    trial_ends = started_dt + timedelta(days=30 * trial_months)
+    today = datetime.now().date()
+    tier = str(st.session_state.get("plan_tier", "free") or "free").lower()
+    if tier not in {"free", "basic", "pro"}:
+        tier = "free"
+    cycle = str(st.session_state.get("billing_cycle", "monthly") or "monthly").lower()
+    if cycle not in {"monthly", "annual"}:
+        cycle = "monthly"
+    in_trial = today <= trial_ends
+    premium = in_trial or tier in {"basic", "pro"}
+    return {
+        "tier": tier,
+        "cycle": cycle,
+        "in_trial": in_trial,
+        "premium": premium,
+        "days_left": max((trial_ends - today).days, 0),
+        "price_basic": 4900,
+        "price_pro": 9900,
+        "price_basic_year": int(4900 * 12 * 0.8),
+        "price_pro_year": int(9900 * 12 * 0.8),
+    }
+
+
+def subscription_entitlements(sub: Dict[str, Any]) -> Dict[str, int]:
+    if sub.get("premium"):
+        return {"save_limit": 1000, "make_limit": 100, "ai_daily_limit": 1000}
+    return {"save_limit": 20, "make_limit": 5, "ai_daily_limit": 10}
+
+
+def ai_usage_left() -> int:
+    sub = subscription_snapshot()
+    ent = subscription_entitlements(sub)
+    day = datetime.now().strftime("%Y-%m-%d")
+    usage = st.session_state.get("ai_usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+    used = int(usage.get(day, 0) or 0)
+    return max(int(ent["ai_daily_limit"]) - used, 0)
 
 # ads storage (inventory + event logs)
 ensure_ads_storage(APP_DIR)
@@ -245,11 +319,15 @@ with st.sidebar:
 
     st.write("")
 
-    # Admin mode first (so we can hide sensitive inputs for general users)
-    try:
-        admin_mode = st.toggle(t("admin_toggle"), value=False)
-    except Exception:
-        admin_mode = st.checkbox(t("admin_toggle"), value=False)
+    # Admin mode is hidden by default. Enable only via ?admin=1.
+    admin_enabled = (_get_query_param("admin") or "").strip() == "1"
+    if admin_enabled:
+        try:
+            admin_mode = st.toggle(t("admin_toggle"), value=True)
+        except Exception:
+            admin_mode = st.checkbox(t("admin_toggle"), value=True)
+    else:
+        admin_mode = False
 
     # API key: in production, set OPENAI_API_KEY as an environment variable.
     # We hide the input for non-admin users if the env var is present.
@@ -264,6 +342,8 @@ with st.sidebar:
             value=env_key,
             help=t("api_key_help"),
         )
+    if admin_mode and st.session_state.get("youtube_error"):
+        st.warning(f"YouTube source fallback: {st.session_state.get('youtube_error')}")
 
     # Defaults (safe)
     model = "gpt-4o-mini"
@@ -272,9 +352,58 @@ with st.sidebar:
     top_k_per_category = 10
     weight_visits = 0.6
     weight_dwell = 0.4
+    sub = subscription_snapshot()
 
     # User-facing settings (folded)
     with st.expander(t("exp_user"), expanded=True):
+        st.caption(
+            f"Plan: {sub['tier'].upper()} ({sub['cycle']}) ? Trial left: {sub['days_left']} days ? "
+            f"Basic {sub['price_basic']:,}/mo ({sub['price_basic_year']:,}/yr) ? "
+            f"Pro {sub['price_pro']:,}/mo ({sub['price_pro_year']:,}/yr)"
+        )
+        if (not sub["premium"]) and (sub["tier"] == "free"):
+            st.info("Trial ended. Ads stay on in free plan. Upgrade to remove ads and raise limits.")
+        bill_cycle = st.selectbox(
+            "Billing",
+            options=["monthly", "annual"],
+            index=0 if st.session_state.get("billing_cycle", "monthly") == "monthly" else 1,
+            key="billing_cycle",
+        )
+        c_plan0, c_plan1, c_plan2 = st.columns(3)
+        with c_plan0:
+            if st.button("Use Free"):
+                st.session_state["plan_tier"] = "free"
+                st.session_state["billing_cycle"] = bill_cycle
+                _save_subscription_state()
+                st.rerun()
+        with c_plan1:
+            if st.button("Use Basic"):
+                st.session_state["plan_tier"] = "basic"
+                st.session_state["billing_cycle"] = bill_cycle
+                _save_subscription_state()
+                st.rerun()
+        with c_plan2:
+            if st.button("Use Pro"):
+                st.session_state["plan_tier"] = "pro"
+                st.session_state["billing_cycle"] = bill_cycle
+                _save_subscription_state()
+                st.rerun()
+        st.caption(f"AI credits left today: {ai_usage_left()}")
+        c_demo1, c_demo2 = st.columns(2)
+        with c_demo1:
+            if st.button("Simulate payment success"):
+                if st.session_state.get("plan_tier", "free") == "free":
+                    st.session_state["plan_tier"] = "basic"
+                _save_subscription_state()
+                st.success("Payment simulation applied.")
+                st.rerun()
+        with c_demo2:
+            if st.button("Reset trial (demo)"):
+                st.session_state["trial_started_at"] = datetime.now().date().isoformat()
+                _save_subscription_state()
+                st.success("Trial reset.")
+                st.rerun()
+
         try:
             show_ads = st.toggle(t("toggle_ads"), value=True)
             show_metrics = st.toggle(t("toggle_metrics"), value=False)
@@ -284,6 +413,8 @@ with st.sidebar:
             show_ads = st.checkbox(t("toggle_ads"), value=True)
             show_metrics = st.checkbox(t("toggle_metrics"), value=False)
             auto_summarize = st.checkbox(t("toggle_auto_summary"), value=True)
+        if not sub["premium"]:
+            show_ads = True
 
         teaser_mode = st.selectbox(
             t("teaser_mode"),
@@ -404,6 +535,26 @@ with st.sidebar:
             weight_dwell = 1.0 - weight_visits
             st.caption(f"체류시간 가중치 = {weight_dwell:.2f}")
 
+            st.markdown("#### YouTube source")
+            st.session_state["yt_region"] = st.text_input("YT region", value=st.session_state.get("yt_region", "KR")).upper()
+            st.session_state["yt_lang"] = st.text_input("YT language", value=st.session_state.get("yt_lang", "ko"))
+            st.session_state["yt_cache_ttl_min"] = st.slider("YT cache TTL (min)", min_value=10, max_value=30, value=int(st.session_state.get("yt_cache_ttl_min", 15)))
+            st.session_state["yt_max_per_query"] = st.slider("YT max/query", min_value=3, max_value=20, value=int(st.session_state.get("yt_max_per_query", 8)))
+            raw_groups = json.dumps(st.session_state.get("yt_query_groups", DEFAULT_YT_QUERY_GROUPS), ensure_ascii=False, indent=2)
+            groups_txt = st.text_area("YT category queries (JSON)", value=raw_groups, height=180)
+            if st.button("Apply YT query config"):
+                try:
+                    parsed = json.loads(groups_txt)
+                    if isinstance(parsed, dict) and parsed:
+                        st.session_state["yt_query_groups"] = parsed
+                        st.session_state["_yt_reload_requested"] = True
+                        st.success("YouTube query config saved.")
+                        st.rerun()
+                    else:
+                        st.error("Invalid JSON object")
+                except Exception as e:
+                    st.error(f"Invalid JSON: {e}")
+
 
 # ---------------------------
 # Helpers / State
@@ -421,6 +572,104 @@ def load_demo_df() -> pd.DataFrame:
     return load_metrics_csv(DEMO_CSV_PATH)
 
 
+@st.cache_data(show_spinner=False, ttl=30 * 60)
+def _cached_youtube_query(
+    query: str,
+    region: str,
+    lang: str,
+    max_results: int,
+    published_days: int,
+    cache_bucket: int,
+) -> List[Dict[str, Any]]:
+    _ = cache_bucket
+    return fetch_youtube_videos(
+        query=query,
+        region=region,
+        lang=lang,
+        max_results=max_results,
+        published_days=published_days,
+    )
+
+
+def _youtube_query_groups() -> Dict[str, List[str]]:
+    raw = st.session_state.get("yt_query_groups")
+    if isinstance(raw, dict) and raw:
+        return {str(k): [str(x) for x in (v or []) if str(x).strip()] for k, v in raw.items()}
+    return {k: list(v) for k, v in DEFAULT_YT_QUERY_GROUPS.items()}
+
+
+def load_youtube_df() -> pd.DataFrame:
+    region = str(st.session_state.get("yt_region", "KR") or "KR").upper()
+    lang = str(st.session_state.get("yt_lang", "ko") or "ko")
+    ttl_min = int(st.session_state.get("yt_cache_ttl_min", 15) or 15)
+    ttl_min = min(max(ttl_min, 10), 30)
+    max_per_query = int(st.session_state.get("yt_max_per_query", 8) or 8)
+    max_per_query = min(max(max_per_query, 3), 20)
+    published_days = int(st.session_state.get("yt_published_days", 7) or 7)
+    groups = _youtube_query_groups()
+    cache_bucket = int(time.time() // (ttl_min * 60))
+
+    rows: List[Dict[str, Any]] = []
+    for cat, queries in groups.items():
+        for q in queries[:5]:
+            items = _cached_youtube_query(
+                query=q,
+                region=region,
+                lang=lang,
+                max_results=max_per_query,
+                published_days=published_days,
+                cache_bucket=cache_bucket,
+            )
+            for it in items:
+                rows.append(
+                    {
+                        "url": it.get("url", ""),
+                        "title": it.get("title", ""),
+                        "visits": float(it.get("views", 0) or 0),
+                        "avg_dwell_sec": float(it.get("avg_dwell_sec", 60) or 60),
+                        "content": it.get("description", "") or "",
+                        "description": it.get("description", "") or "",
+                        "category": cat,
+                        "thumbnail_url": it.get("thumbnail_url", ""),
+                        "channel_title": it.get("channel_title", ""),
+                        "published_at": it.get("published_at", ""),
+                        "like_count": float(it.get("like_count", 0) or 0),
+                        "comment_count": float(it.get("comment_count", 0) or 0),
+                    }
+                )
+
+    if not rows:
+        return pd.DataFrame(columns=["url", "title", "visits", "avg_dwell_sec", "content", "category"])
+    df = pd.DataFrame(rows)
+    df = df.sort_values(["visits", "avg_dwell_sec"], ascending=False).drop_duplicates(subset=["url"], keep="first")
+    return df.reset_index(drop=True)
+
+
+def _relative_time_text(iso_dt: str) -> str:
+    try:
+        s = str(iso_dt or "").replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        delta = datetime.now(dt.tzinfo) - dt
+        hours = int(delta.total_seconds() // 3600)
+        if hours < 1:
+            return "just now"
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        return f"{days}d ago"
+    except Exception:
+        return ""
+
+
+def _views_text(v: Any) -> str:
+    n = float(v or 0)
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M views"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}K views"
+    return f"{int(n)} views"
+
+
 def refresh_scores() -> None:
     """Recompute df_scored/top tables when weights or dataset changes."""
     if "df_raw" not in st.session_state or st.session_state["df_raw"] is None:
@@ -432,10 +681,42 @@ def refresh_scores() -> None:
     st.session_state["topk_cat_df"] = topk_per_category(df_scored, top_k=top_k_per_category)
 
 
+def _load_subscription_state() -> Dict[str, Any]:
+    try:
+        if os.path.exists(SUBSCRIPTION_STATE_PATH):
+            with open(SUBSCRIPTION_STATE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_subscription_state() -> None:
+    try:
+        os.makedirs(os.path.dirname(SUBSCRIPTION_STATE_PATH), exist_ok=True)
+        data = {
+            "plan_tier": st.session_state.get("plan_tier", "free"),
+            "billing_cycle": st.session_state.get("billing_cycle", "monthly"),
+            "trial_started_at": st.session_state.get("trial_started_at"),
+        }
+        with open(SUBSCRIPTION_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def init_state() -> None:
     if "df_raw" not in st.session_state:
-        st.session_state["df_raw"] = load_demo_df()
-        st.session_state["data_source"] = "demo"
+        try:
+            st.session_state["df_raw"] = load_youtube_df()
+            st.session_state["data_source"] = "youtube"
+            st.session_state["youtube_error"] = ""
+        except Exception as e:
+            st.session_state["df_raw"] = load_demo_df()
+            st.session_state["data_source"] = "demo"
+            st.session_state["youtube_error"] = str(e)
 
     st.session_state.setdefault("summary_cache", {})  # url -> summary dict
     st.session_state.setdefault("ad_impressions", set())  # (ad|placement|context)
@@ -444,10 +725,125 @@ def init_state() -> None:
     st.session_state.setdefault("open_dialog", False)
     st.session_state.setdefault("search_query", "")
     st.session_state.setdefault("interest_cats", [])
+    st.session_state.setdefault("yt_region", "KR")
+    st.session_state.setdefault("yt_lang", "ko")
+    st.session_state.setdefault("yt_published_days", 7)
+    st.session_state.setdefault("yt_cache_ttl_min", 15)
+    st.session_state.setdefault("yt_max_per_query", 8)
+    st.session_state.setdefault("yt_query_groups", {k: list(v) for k, v in DEFAULT_YT_QUERY_GROUPS.items()})
+    ttl_min = min(max(int(st.session_state.get("yt_cache_ttl_min", 15) or 15), 10), 30)
+    bucket = int(time.time() // (ttl_min * 60))
+    prev_bucket = st.session_state.get("_yt_bucket")
+    if st.session_state.get("data_source") == "youtube" and prev_bucket != bucket and not st.session_state.get("_yt_reload_requested"):
+        try:
+            st.session_state["df_raw"] = load_youtube_df()
+            st.session_state["youtube_error"] = ""
+        except Exception as e:
+            st.session_state["youtube_error"] = str(e)
+    st.session_state["_yt_bucket"] = bucket
+    if st.session_state.get("_yt_reload_requested"):
+        try:
+            st.session_state["df_raw"] = load_youtube_df()
+            st.session_state["data_source"] = "youtube"
+            st.session_state["youtube_error"] = ""
+        except Exception as e:
+            st.session_state["df_raw"] = load_demo_df()
+            st.session_state["data_source"] = "demo"
+            st.session_state["youtube_error"] = str(e)
+        st.session_state["_yt_reload_requested"] = False
+    if "_subscription_loaded" not in st.session_state:
+        ss = _load_subscription_state()
+        if ss:
+            st.session_state.setdefault("plan_tier", str(ss.get("plan_tier", "free") or "free"))
+            st.session_state.setdefault("billing_cycle", str(ss.get("billing_cycle", "monthly") or "monthly"))
+            if ss.get("trial_started_at"):
+                st.session_state.setdefault("trial_started_at", str(ss.get("trial_started_at")))
+        st.session_state["_subscription_loaded"] = True
+    st.session_state.setdefault("plan_tier", "free")
+    st.session_state.setdefault("billing_cycle", "monthly")
     refresh_scores()
 
 
 init_state()
+
+
+def subscription_snapshot() -> Dict[str, Any]:
+    trial_months = 6
+    started = st.session_state.get("trial_started_at")
+    if not started:
+        started = datetime.now().date().isoformat()
+        st.session_state["trial_started_at"] = started
+        _save_subscription_state()
+    try:
+        started_dt = datetime.fromisoformat(str(started)).date()
+    except Exception:
+        started_dt = datetime.now().date()
+        st.session_state["trial_started_at"] = started_dt.isoformat()
+        _save_subscription_state()
+
+    trial_ends = started_dt + timedelta(days=30 * trial_months)
+    today = datetime.now().date()
+    in_trial = today <= trial_ends
+
+    tier = str(st.session_state.get("plan_tier", "free") or "free").lower()
+    if tier not in {"free", "basic", "pro"}:
+        tier = "free"
+    cycle = str(st.session_state.get("billing_cycle", "monthly") or "monthly").lower()
+    if cycle not in {"monthly", "annual"}:
+        cycle = "monthly"
+    paid = tier in {"basic", "pro"}
+    premium = in_trial or paid
+    days_left = max((trial_ends - today).days, 0)
+    price_basic = 4900
+    price_pro = 9900
+    price_basic_year = int(price_basic * 12 * 0.8)
+    price_pro_year = int(price_pro * 12 * 0.8)
+    return {
+        "tier": tier,
+        "cycle": cycle,
+        "in_trial": in_trial,
+        "premium": premium,
+        "days_left": days_left,
+        "trial_ends": trial_ends.isoformat(),
+        "price_basic": price_basic,
+        "price_pro": price_pro,
+        "price_basic_year": price_basic_year,
+        "price_pro_year": price_pro_year,
+    }
+
+
+def subscription_entitlements(sub: Dict[str, Any]) -> Dict[str, int]:
+    if sub.get("premium"):
+        return {"save_limit": 1000, "make_limit": 100, "ai_daily_limit": 1000}
+    return {"save_limit": 20, "make_limit": 5, "ai_daily_limit": 10}
+
+
+def _today_key() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def ai_usage_left() -> int:
+    sub = subscription_snapshot()
+    ent = subscription_entitlements(sub)
+    day = _today_key()
+    usage = st.session_state.get("ai_usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+    used = int(usage.get(day, 0) or 0)
+    return max(int(ent["ai_daily_limit"]) - used, 0)
+
+
+def consume_ai_credit() -> bool:
+    left = ai_usage_left()
+    if left <= 0:
+        return False
+    day = _today_key()
+    usage = st.session_state.get("ai_usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+    usage[day] = int(usage.get(day, 0) or 0) + 1
+    st.session_state["ai_usage"] = usage
+    return True
 
 
 def get_row_by_url(url: str) -> Optional[Dict[str, Any]]:
@@ -556,6 +952,11 @@ def set_cached_summary(
 def add_to_selection(summary: Dict[str, Any]) -> None:
     selected: List[Dict[str, Any]] = st.session_state.get("selected_summaries", [])
     urls = {x.get("url") for x in selected}
+    sub = subscription_snapshot()
+    save_limit = subscription_entitlements(sub)["save_limit"]
+    if len(selected) >= save_limit and summary.get("url") not in urls:
+        st.warning(f"Save limit reached ({save_limit}). Upgrade plan to save more items.")
+        return
     if summary.get("url") not in urls:
         selected.append(summary)
         st.session_state["selected_summaries"] = selected
@@ -762,7 +1163,7 @@ with tab_feed:
                 try:
                     log_event(
                         APP_DIR,
-                        event="click",
+                        event=("affiliate_click" if str((ad.pricing or {}).get("type", "CPC") or "CPC").upper() in {"CPA", "CPS", "AFFILIATE"} else "click"),
                         ad_id=ad.id,
                         placement=placement,
                         content_url=content_url,
@@ -773,7 +1174,18 @@ with tab_feed:
                 except Exception:
                     pass
                 st.toast("스폰서 클릭이 기록됐어요")
-                st.markdown(f"[🔗 스폰서 링크 열기]({ad.landing_url})")
+                base_link = (ad.landing_url or "").strip()
+                if base_link:
+                    sep = "&" if "?" in base_link else "?"
+                    tracked_link = (
+                        f"{base_link}{sep}"
+                        f"utm_source=staypick&utm_medium=native_ad"
+                        f"&utm_campaign={quote_plus(ad.id)}"
+                        f"&utm_content={quote_plus(placement)}"
+                    )
+                else:
+                    tracked_link = base_link
+                st.markdown(f"[🔗 스폰서 링크 열기]({tracked_link or ad.landing_url})")
         with c2:
             st.caption("※ 스폰서/광고")
 
@@ -800,19 +1212,33 @@ with tab_feed:
                         teaser = snippet_from_content(content, 90)
 
                     emoji = emoji_for_category(cat)
-                    thumb_style = gradient_for_seed(url)
+                    thumb_url = str(row.get("thumbnail_url", "") or "").strip()
+                    if thumb_url:
+                        thumb_style = f"background-image:url('{html.escape(thumb_url)}'); background-size:cover; background-position:center;"
+                        thumb_text = ""
+                    else:
+                        thumb_style = gradient_for_seed(url)
+                        thumb_text = html.escape(emoji)
+                    yt_meta = " · ".join(
+                        [
+                            str(row.get("channel_title", "") or "").strip(),
+                            _relative_time_text(str(row.get("published_at", "") or "")),
+                            _views_text(row.get("visits", 0)),
+                        ]
+                    ).strip(" ·")
                     chips_html = chips_to_html([f"{emoji} {cat}", "🔥 실시간"], max_items=2)
 
                     st.markdown(
                         f"""
 <div class="sp-card">
   <div class="sp-row">
-    <div class="sp-thumb" style="{thumb_style}">{html.escape(emoji)}</div>
+    <div class="sp-thumb" style="{thumb_style}">{thumb_text}</div>
     <div class="sp-meta">
       <div>
         <span class="rank-badge">TOP {i}</span>
         <span class="sp-kicker" style="margin-left:6px;">{html.escape(cat)}</span>
       </div>
+      <div class="sp-kicker">{html.escape(yt_meta)}</div>
       <div class="sp-title">{html.escape(display_title)}</div>
       <div class="sp-snippet">{html.escape(teaser or '눌러서 3초 요약 보기')}</div>
       <div class="sp-chips">{chips_html}</div>
@@ -888,16 +1314,30 @@ with tab_feed:
                     teaser = snippet_from_content(content, 120)
 
                 emoji = emoji_for_category(selected_cat)
-                thumb_style = gradient_for_seed(url)
+                thumb_url = str(row.get("thumbnail_url", "") or "").strip()
+                if thumb_url:
+                    thumb_style = f"background-image:url('{html.escape(thumb_url)}'); background-size:cover; background-position:center;"
+                    thumb_text = ""
+                else:
+                    thumb_style = gradient_for_seed(url)
+                    thumb_text = html.escape(emoji)
+                yt_meta = " · ".join(
+                    [
+                        str(row.get("channel_title", "") or "").strip(),
+                        _relative_time_text(str(row.get("published_at", "") or "")),
+                        _views_text(row.get("visits", 0)),
+                    ]
+                ).strip(" ·")
                 chips_html = chips_to_html([f"{emoji} {selected_cat}", f"TOP {rank}"], max_items=2)
 
                 st.markdown(
                     f"""
 <div class="sp-card">
   <div class="sp-row">
-    <div class="sp-thumb" style="{thumb_style}">{html.escape(emoji)}</div>
+    <div class="sp-thumb" style="{thumb_style}">{thumb_text}</div>
     <div class="sp-meta">
       <div class="sp-kicker">{rank}. {html.escape(selected_cat)}</div>
+      <div class="sp-kicker">{html.escape(yt_meta)}</div>
       <div class="sp-title">{html.escape(display_title)}</div>
       <div class="sp-snippet">{html.escape(teaser or '미리보기 없음 · 눌러서 3초 요약')}</div>
       <div class="sp-chips">{chips_html}</div>
@@ -1044,12 +1484,14 @@ with tab_feed:
                 visits_v = float(row.get("visits", 0) or 0)
                 dwell_s = float(row.get("avg_dwell_sec", 0) or 0)
                 score_v = row.get("engagement_score", None)
+                recency = _relative_time_text(str(row.get("published_at", "") or ""))
+                comments_v = float(row.get("comment_count", 0) or 0)
                 if visits_v <= 0 and dwell_s <= 0 and score_v is None:
-                    why = "?? ??? ???? ?? ?? ?? ?? ????? ???? ?? ?????."
+                    why = "Core metrics are limited, so this item is treated as generally relevant without over-claiming."
                 else:
                     why = (
-                        f"?? {visits_v:.0f}?? ?? ?? {dwell_s:.1f}?? ?? ??? ??? ?????. "
-                        f"??? ?? {float(score_v or 0):.3f}? ?? ?? ?? ???? ?? ??? ????."
+                        f"Published {recency or 'recently'} with {_views_text(visits_v)} and comment activity ({comments_v:.0f}) shows active response. "
+                        f"Engagement score {float(score_v or 0):.3f} and dwell proxy {dwell_s:.1f}s suggest sustained interest."
                     )
             st.markdown("**Why trending**")
             st.write(why)
@@ -1115,13 +1557,22 @@ with tab_feed:
 
         def _build_summary() -> Optional[Dict[str, Any]]:
             """Fetch content (if needed) and build a summary. Returns summary dict or None."""
+            if not consume_ai_credit():
+                st.warning("Daily AI credit limit reached for current plan.")
+                return None
             try:
                 ai = ensure_ai()
             except Exception as e:
                 st.error(str(e))
                 return None
 
-            metrics = {"visits": float(row.get("visits", 0)), "avg_dwell_sec": float(row.get("avg_dwell_sec", 0))}
+            metrics = {
+                "visits": float(row.get("visits", 0)),
+                "avg_dwell_sec": float(row.get("avg_dwell_sec", 0)),
+                "engagement_score": float(row.get("engagement_score", 0)),
+                "comment_count": float(row.get("comment_count", 0) or 0),
+                "published_at": str(row.get("published_at", "") or ""),
+            }
             # Prefer CSV content; otherwise fetch. If fetch fails, fall back to title/snippet.
             with st.spinner("원문 준비 중..."):
                 page_title = source_title or selected_url
@@ -1282,6 +1733,9 @@ with tab_feed:
             tone_local = st.text_area("톤/추가 지시(선택)", value=brand_tone, height=70)
 
             if st.button(t("btn_make"), type="primary", key="dlg_gen"):
+                if not consume_ai_credit():
+                    st.warning("Daily AI credit limit reached for current plan.")
+                    return
                 try:
                     ai = ensure_ai()
                 except Exception as e:
@@ -1322,6 +1776,11 @@ with tab_feed:
 with tab_make:
     st.subheader("✍️ 저장한 목록으로 콘텐츠 만들기")
     selected_list: List[Dict[str, Any]] = st.session_state.get("selected_summaries", [])
+    sub_make = subscription_snapshot()
+    make_limit = 100 if sub_make["premium"] else 5
+    selected_for_make = selected_list[:make_limit]
+    if len(selected_list) > make_limit:
+        st.warning(f"Current plan allows up to {make_limit} saved items for batch generation.")
     st.caption("피드에서 마음에 드는 글을 **저장**하면, 여기서 묶어서 만들 수 있어요.")
 
     if not selected_list:
@@ -1368,6 +1827,9 @@ with tab_make:
         tone2 = st.text_area("톤/추가 지시(선택)", placeholder="예: 훅 강하게, 불릿 많게, 마지막에 CTA", height=90)
 
         if st.button("저장 목록으로 새 콘텐츠 생성", type="primary"):
+            if not consume_ai_credit():
+                st.warning("Daily AI credit limit reached for current plan.")
+                st.stop()
             try:
                 ai = ensure_ai()
             except Exception as e:
@@ -1377,7 +1839,7 @@ with tab_make:
             with st.spinner("새 콘텐츠 생성 중..."):
                 try:
                     output_md = ai.generate_content(
-                        summaries=selected_list,
+                        summaries=selected_for_make,
                         persona=persona2,
                         output_format=format2,
                         additional_context=tone2,
@@ -1503,7 +1965,13 @@ if admin_mode and tab_insights is not None:
             for i, row in enumerate(rows, start=1):
                 url = row["url"]
                 title_hint = row.get("title", "") or url
-                metrics = {"visits": float(row.get("visits", 0)), "avg_dwell_sec": float(row.get("avg_dwell_sec", 0))}
+                metrics = {
+                    "visits": float(row.get("visits", 0)),
+                    "avg_dwell_sec": float(row.get("avg_dwell_sec", 0)),
+                    "engagement_score": float(row.get("engagement_score", 0)),
+                    "comment_count": float(row.get("comment_count", 0) or 0),
+                    "published_at": str(row.get("published_at", "") or ""),
+                }
                 content_from_csv = (row.get("content", "") or "").strip()
 
                 cached = get_cached_summary(
@@ -1583,6 +2051,8 @@ if admin_mode and tab_insights is not None:
 # ---------------------------
 if admin_mode and tab_sponsor is not None:
     with tab_sponsor:
+        sub_sponsor = subscription_snapshot()
+        b2b_enabled = bool(sub_sponsor.get("in_trial")) or (sub_sponsor.get("tier") == "pro")
         st.subheader("💰 스폰서/광고 설정(운영자)")
         st.markdown(
             """
@@ -1625,6 +2095,129 @@ StayPick은 일반 유저에게는 **포털형 피드**로 경험을 제공하�
                     axis=1,
                 )
                 st.dataframe(pivot, use_container_width=True)
+                ad_by_id = {a.id: a for a in ads_list}
+                if "affiliate_click" not in pivot.columns:
+                    pivot["affiliate_click"] = 0
+                if "affiliate_lead" not in pivot.columns:
+                    pivot["affiliate_lead"] = 0
+                if "affiliate_purchase" not in pivot.columns:
+                    pivot["affiliate_purchase"] = 0
+                pivot["affiliate_conversion"] = pivot["affiliate_lead"] + pivot["affiliate_purchase"]
+                pivot["ad_rev_est_krw"] = pivot.apply(
+                    lambda r: float(r.get("click", 0))
+                    * float((ad_by_id.get(str(r.get("ad_id", ""))).pricing or {}).get("cpc_krw", 0) or 0)
+                    if ad_by_id.get(str(r.get("ad_id", "")))
+                    else 0.0,
+                    axis=1,
+                )
+                pivot["affiliate_rev_est_krw"] = pivot.apply(
+                    lambda r: float(r.get("affiliate_conversion", 0))
+                    * float((ad_by_id.get(str(r.get("ad_id", ""))).pricing or {}).get("cpa_krw", 0) or 0)
+                    if ad_by_id.get(str(r.get("ad_id", "")))
+                    else 0.0,
+                    axis=1,
+                )
+                pivot["CVR(%)"] = pivot.apply(
+                    lambda r: (float(r.get("affiliate_conversion", 0)) / float(r.get("affiliate_click", 0)) * 100.0)
+                    if float(r.get("affiliate_click", 0)) > 0
+                    else 0.0,
+                    axis=1,
+                )
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Impressions", f"{int(pivot['impression'].sum()):,}")
+                m2.metric("Clicks", f"{int(pivot['click'].sum()):,}")
+                m3.metric("Affiliate Conv", f"{int(pivot['affiliate_conversion'].sum()):,}")
+                m4.metric("Ad Rev Est (KRW)", f"{int(pivot['ad_rev_est_krw'].sum()):,}")
+                m5.metric("Affiliate Rev Est (KRW)", f"{int(pivot['affiliate_rev_est_krw'].sum()):,}")
+
+                st.markdown("#### B2B report export")
+                b2b_rows = []
+                for _, r in pivot.iterrows():
+                    ad_id = str(r.get("ad_id", ""))
+                    ad = ad_by_id.get(ad_id)
+                    b2b_rows.append(
+                        {
+                            "ad_id": ad_id,
+                            "brand": (ad.brand if ad else ""),
+                            "pricing_type": str(((ad.pricing or {}).get("type", "CPC") if ad else "CPC")).upper(),
+                            "impression": float(r.get("impression", 0) or 0),
+                            "click": float(r.get("click", 0) or 0),
+                            "affiliate_click": float(r.get("affiliate_click", 0) or 0),
+                            "affiliate_lead": float(r.get("affiliate_lead", 0) or 0),
+                            "affiliate_purchase": float(r.get("affiliate_purchase", 0) or 0),
+                            "affiliate_conversion": float(r.get("affiliate_conversion", 0) or 0),
+                            "ctr_pct": float(r.get("CTR(%)", 0) or 0),
+                            "cvr_pct": float(r.get("CVR(%)", 0) or 0),
+                            "ad_rev_est_krw": float(r.get("ad_rev_est_krw", 0) or 0),
+                            "affiliate_rev_est_krw": float(r.get("affiliate_rev_est_krw", 0) or 0),
+                        }
+                    )
+                b2b_df = pd.DataFrame(b2b_rows)
+                st.download_button(
+                    "Download B2B CSV",
+                    data=b2b_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"staypick_b2b_monetization_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                    disabled=not b2b_enabled,
+                )
+
+                # B2B-ready category performance view (ad/affiliate + content quality)
+                if "content_category" in df_ev.columns:
+                    cat_pivot = (
+                        df_ev.pivot_table(index="content_category", columns="event", values="ts", aggfunc="count", fill_value=0)
+                        .reset_index()
+                        .rename_axis(None, axis=1)
+                    )
+                    if "impression" not in cat_pivot.columns:
+                        cat_pivot["impression"] = 0
+                    if "click" not in cat_pivot.columns:
+                        cat_pivot["click"] = 0
+                    if "affiliate_click" not in cat_pivot.columns:
+                        cat_pivot["affiliate_click"] = 0
+                    if "affiliate_lead" not in cat_pivot.columns:
+                        cat_pivot["affiliate_lead"] = 0
+                    if "affiliate_purchase" not in cat_pivot.columns:
+                        cat_pivot["affiliate_purchase"] = 0
+                    cat_pivot["affiliate_conversion"] = cat_pivot["affiliate_lead"] + cat_pivot["affiliate_purchase"]
+                    cat_pivot["CTR(%)"] = cat_pivot.apply(
+                        lambda r: (float(r.get("click", 0)) / float(r.get("impression", 0)) * 100.0) if float(r.get("impression", 0)) > 0 else 0.0,
+                        axis=1,
+                    )
+                    cat_pivot["CVR(%)"] = cat_pivot.apply(
+                        lambda r: (float(r.get("affiliate_conversion", 0)) / float(r.get("affiliate_click", 0)) * 100.0)
+                        if float(r.get("affiliate_click", 0)) > 0
+                        else 0.0,
+                        axis=1,
+                    )
+                    df_sc_local = st.session_state.get("df_scored", pd.DataFrame())
+                    if (
+                        df_sc_local is not None
+                        and not df_sc_local.empty
+                        and "url" in df_sc_local.columns
+                        and "engagement_score" in df_sc_local.columns
+                    ):
+                        quality = (
+                            df_sc_local.groupby("category", dropna=False)
+                            .agg(
+                                avg_engagement=("engagement_score", "mean"),
+                                avg_dwell_sec=("avg_dwell_sec", "mean"),
+                                avg_visits=("visits", "mean"),
+                            )
+                            .reset_index()
+                            .rename(columns={"category": "content_category"})
+                        )
+                        cat_pivot = cat_pivot.merge(quality, on="content_category", how="left")
+                    st.markdown("#### Category performance (B2B)")
+                    st.dataframe(cat_pivot.sort_values(["CTR(%)", "impression"], ascending=False), use_container_width=True)
+                    st.download_button(
+                        "Download Category CSV",
+                        data=cat_pivot.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=f"staypick_b2b_category_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv",
+                        disabled=not b2b_enabled,
+                    )
+                if not b2b_enabled:
+                    st.info("B2B CSV export is available on Pro plan after trial.")
         else:
             st.caption("이벤트 로그 파일이 없습니다. data 폴더를 확인해주세요.")
 
@@ -1639,14 +2232,35 @@ StayPick은 일반 유저에게는 **포털형 피드**로 경험을 제공하�
                         "id": a.id,
                         "brand": a.brand,
                         "title": a.title,
+                        "pricing_type": str((a.pricing or {}).get("type", "CPC") or "CPC"),
                         "categories": ", ".join(a.categories),
                         "cpc(krw)": int((a.pricing or {}).get("cpc_krw", 0) or 0),
+                        "cpa(krw)": int((a.pricing or {}).get("cpa_krw", 0) or 0),
                         "active": a.active,
                     }
                     for a in ads_list
                 ]
             )
             st.dataframe(inv_df, use_container_width=True)
+            with st.expander("Affiliate conversion logger", expanded=False):
+                ad_ids = [a.id for a in ads_list]
+                sel_ad = st.selectbox("Ad ID", options=ad_ids, key="aff_log_ad")
+                conv_evt = st.selectbox("Conversion type", options=["affiliate_lead", "affiliate_purchase"], key="aff_log_type")
+                conv_n = st.number_input("Count", min_value=1, value=1, step=1, key="aff_log_count")
+                if st.button("Log conversion", key="aff_log_btn"):
+                    for _ in range(int(conv_n)):
+                        log_event(
+                            APP_DIR,
+                            event=conv_evt,
+                            ad_id=sel_ad,
+                            placement="affiliate_report",
+                            content_url="",
+                            content_category="",
+                            persona="admin",
+                            query="manual_conversion",
+                        )
+                    st.success(f"Logged {int(conv_n)} events: {conv_evt}")
+                    st.rerun()
 
         st.divider()
         st.markdown("### ➕ 새 스폰서 추가")
@@ -1670,7 +2284,9 @@ StayPick은 일반 유저에게는 **포털형 피드**로 경험을 제공하�
         product_desc = st.text_area("상품/서비스 설명(선택)", placeholder="예: 직장인 재테크 입문자를 위한 자동 예산 관리 앱", height=90)
         image_url = st.text_input("썸네일 이미지 URL(선택)", value=st.session_state.get("new_ad_img", ""), placeholder="예: https://.../image.png")
         cats = st.multiselect("타겟 카테고리", options=cat_options, default=["전체"])
+        pricing_type = st.selectbox("Pricing type", options=["CPC", "CPA"], index=0)
         cpc = st.number_input("가정 CPC(원)", min_value=0, value=100, step=10)
+        cpa = st.number_input("가정 CPA(원)", min_value=0, value=0, step=100)
         active = st.checkbox("활성화", value=True)
 
         st.markdown("#### 카피")
@@ -1770,7 +2386,7 @@ StayPick은 일반 유저에게는 **포털형 피드**로 경험을 제공하�
                         landing_url=landing_url.strip(),
                         categories=cats or ["전체"],
                         keywords=[k.strip() for k in (kw_in or "").split(",") if k.strip()],
-                        pricing={"type": "CPC", "cpc_krw": int(cpc)},
+                        pricing={"type": pricing_type, "cpc_krw": int(cpc), "cpa_krw": int(cpa)},
                         image_url=(image_url.strip() or ""),
                         active=bool(active),
                     )
@@ -1798,12 +2414,25 @@ StayPick은 일반 유저에게는 **포털형 피드**로 경험을 제공하�
                     a_img = st.text_input("썸네일 이미지 URL(선택)", value=getattr(a, "image_url", ""), key=f"ad_img_{a.id}")
                     a_cats = st.text_input("카테고리(쉼표)", value=", ".join(a.categories), key=f"ad_cats_{a.id}")
                     a_kw = st.text_input("키워드(쉼표)", value=", ".join(a.keywords), key=f"ad_kw_{a.id}")
+                    a_type = st.selectbox(
+                        "Pricing type",
+                        options=["CPC", "CPA"],
+                        index=0 if str((a.pricing or {}).get("type", "CPC")).upper() == "CPC" else 1,
+                        key=f"ad_type_{a.id}",
+                    )
                     a_cpc = st.number_input(
                         "CPC(원)",
                         min_value=0,
                         value=int((a.pricing or {}).get("cpc_krw", 0) or 0),
                         step=10,
                         key=f"ad_cpc_{a.id}",
+                    )
+                    a_cpa = st.number_input(
+                        "CPA(원)",
+                        min_value=0,
+                        value=int((a.pricing or {}).get("cpa_krw", 0) or 0),
+                        step=100,
+                        key=f"ad_cpa_{a.id}",
                     )
 
                     edited.append(
@@ -1817,7 +2446,7 @@ StayPick은 일반 유저에게는 **포털형 피드**로 경험을 제공하�
                             landing_url=a_url,
                             categories=[c.strip() for c in a_cats.split(",") if c.strip()],
                             keywords=[k.strip() for k in a_kw.split(",") if k.strip()],
-                            pricing={"type": "CPC", "cpc_krw": int(a_cpc)},
+                            pricing={"type": a_type, "cpc_krw": int(a_cpc), "cpa_krw": int(a_cpa)},
                             image_url=a_img,
                             active=bool(a_active),
                         )
@@ -2097,6 +2726,9 @@ Streamlit 기반 MVP는 **데모/해커톤에는 최고**지만, 검색 엔진�
                         metrics = {
                             "visits": float(r.get("visits", 0) or 0),
                             "avg_dwell_sec": float(r.get("avg_dwell_sec", 0) or 0),
+                            "engagement_score": float(r.get("engagement_score", 0) or 0),
+                            "comment_count": float(r.get("comment_count", 0) or 0),
+                            "published_at": str(r.get("published_at", "") or ""),
                         }
 
                         s = None
