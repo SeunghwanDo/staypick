@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import json
@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 import pandas as pd
+import numpy as np
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -149,10 +150,21 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEMO_CSV_PATH = os.path.join(APP_DIR, "sample_data", "metrics_sample_fun_with_content.csv")
 SUBSCRIPTION_STATE_PATH = os.path.join(APP_DIR, "data", "subscription_state.json")
 DEFAULT_YT_QUERY_GROUPS: Dict[str, List[str]] = {
-    "게임": ["게임 추천", "스팀 게임", "모바일 게임"],
-    "연애/썰": ["연애 썰", "썸", "이별"],
-    "재테크": ["재테크", "주식 입문", "절약"],
-    "생활꿀팁": ["생활 꿀팁", "청소 꿀팁", "요리 꿀팁"],
+    "game": ["game recommendation", "steam game", "mobile game"],
+    "finance": ["personal finance", "stock beginner", "saving tips"],
+    "love": ["dating story", "relationship advice", "breakup story"],
+    "life": ["life hacks", "cleaning tips", "cooking tips"],
+    "tech": ["tech trend", "ai tool", "gadgets"],
+    "trend": ["viral video", "trending now", "hot issue"],
+}
+FEED_CATEGORY_ORDER = ["game", "finance", "love", "life", "tech", "trend"]
+FEED_CATEGORY_EMOJI = {
+    "game": "🎮",
+    "finance": "💰",
+    "love": "💕",
+    "life": "🧩",
+    "tech": "🤖",
+    "trend": "🔥",
 }
 
 
@@ -350,8 +362,17 @@ with st.sidebar:
     embedding_model = "text-embedding-3-small"
     top_n = 8
     top_k_per_category = 10
-    weight_visits = 0.6
-    weight_dwell = 0.4
+    st.session_state.setdefault("weight_visits", 0.6)
+    st.session_state.setdefault("portal_base_w", 0.72)
+    st.session_state.setdefault("portal_react_w", 0.18)
+    st.session_state.setdefault("portal_recency_w", 0.10)
+    st.session_state.setdefault("personal_base_w", 0.9)
+    st.session_state.setdefault("personal_cat_w", 0.1)
+    st.session_state.setdefault("reco_base_w", 0.9)
+    st.session_state.setdefault("reco_click_w", 0.1)
+    st.session_state.setdefault("reco_half_life_hours", 24.0)
+    weight_visits = float(st.session_state.get("weight_visits", 0.6))
+    weight_dwell = 1.0 - weight_visits
     sub = subscription_snapshot()
 
     # User-facing settings (folded)
@@ -529,11 +550,30 @@ with st.sidebar:
                 "스코어 가중치: 방문수",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.6,
+                value=float(st.session_state.get("weight_visits", 0.6)),
                 step=0.05,
             )
+            st.session_state["weight_visits"] = float(weight_visits)
             weight_dwell = 1.0 - weight_visits
             st.caption(f"체류시간 가중치 = {weight_dwell:.2f}")
+
+            st.markdown("#### Recommendation tuning")
+            pb = st.slider("portal base", min_value=0.0, max_value=1.0, value=float(st.session_state.get("portal_base_w", 0.72)), step=0.01)
+            pr = st.slider("portal reactions", min_value=0.0, max_value=1.0, value=float(st.session_state.get("portal_react_w", 0.18)), step=0.01)
+            pc = st.slider("portal recency", min_value=0.0, max_value=1.0, value=float(st.session_state.get("portal_recency_w", 0.10)), step=0.01)
+            s = max(pb + pr + pc, 1e-9)
+            st.session_state["portal_base_w"] = pb / s
+            st.session_state["portal_react_w"] = pr / s
+            st.session_state["portal_recency_w"] = pc / s
+            st.caption(
+                f"normalized: {st.session_state['portal_base_w']:.2f} / "
+                f"{st.session_state['portal_react_w']:.2f} / {st.session_state['portal_recency_w']:.2f}"
+            )
+            st.session_state["personal_base_w"] = st.slider("feed base score", min_value=0.0, max_value=1.0, value=float(st.session_state.get("personal_base_w", 0.9)), step=0.05)
+            st.session_state["personal_cat_w"] = st.slider("feed category preference", min_value=0.0, max_value=1.0, value=float(st.session_state.get("personal_cat_w", 0.1)), step=0.05)
+            st.session_state["reco_base_w"] = st.slider("reco base score", min_value=0.0, max_value=1.0, value=float(st.session_state.get("reco_base_w", 0.9)), step=0.05)
+            st.session_state["reco_click_w"] = st.slider("reco click boost", min_value=0.0, max_value=1.0, value=float(st.session_state.get("reco_click_w", 0.1)), step=0.05)
+            st.session_state["reco_half_life_hours"] = st.slider("reco decay half-life (hours)", min_value=6.0, max_value=168.0, value=float(st.session_state.get("reco_half_life_hours", 24.0)), step=1.0)
 
             st.markdown("#### YouTube source")
             st.session_state["yt_region"] = st.text_input("YT region", value=st.session_state.get("yt_region", "KR")).upper()
@@ -572,13 +612,14 @@ def load_demo_df() -> pd.DataFrame:
     return load_metrics_csv(DEMO_CSV_PATH)
 
 
-@st.cache_data(show_spinner=False, ttl=30 * 60)
+@st.cache_data(show_spinner=False, ttl=15 * 60)
 def _cached_youtube_query(
     query: str,
     region: str,
     lang: str,
     max_results: int,
     published_days: int,
+    category: str,
     cache_bucket: int,
 ) -> List[Dict[str, Any]]:
     _ = cache_bucket
@@ -588,17 +629,33 @@ def _cached_youtube_query(
         lang=lang,
         max_results=max_results,
         published_days=published_days,
+        category=category,
     )
 
 
 def _youtube_query_groups() -> Dict[str, List[str]]:
     raw = st.session_state.get("yt_query_groups")
+    alias = {
+        "게임": "game",
+        "연애/썰": "love",
+        "연애": "love",
+        "재테크": "finance",
+        "생활꿀팁": "life",
+        "테크": "tech",
+        "트렌드": "trend",
+        "전체": "trend",
+    }
     if isinstance(raw, dict) and raw:
-        return {str(k): [str(x) for x in (v or []) if str(x).strip()] for k, v in raw.items()}
+        out: Dict[str, List[str]] = {}
+        for k, v in raw.items():
+            kk = str(k).strip()
+            kk = alias.get(kk, kk)
+            out[kk] = [str(x) for x in (v or []) if str(x).strip()]
+        return out
     return {k: list(v) for k, v in DEFAULT_YT_QUERY_GROUPS.items()}
 
 
-def load_youtube_df() -> pd.DataFrame:
+def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
     region = str(st.session_state.get("yt_region", "KR") or "KR").upper()
     lang = str(st.session_state.get("yt_lang", "ko") or "ko")
     ttl_min = int(st.session_state.get("yt_cache_ttl_min", 15) or 15)
@@ -610,26 +667,32 @@ def load_youtube_df() -> pd.DataFrame:
     cache_bucket = int(time.time() // (ttl_min * 60))
 
     rows: List[Dict[str, Any]] = []
-    for cat, queries in groups.items():
-        for q in queries[:5]:
+    if selected_category and selected_category in groups:
+        active_groups = {selected_category: groups.get(selected_category, [])}
+    else:
+        active_groups = groups
+    for cat, queries in active_groups.items():
+        for q in queries[:1]:
             items = _cached_youtube_query(
                 query=q,
                 region=region,
                 lang=lang,
                 max_results=max_per_query,
                 published_days=published_days,
+                category=cat,
                 cache_bucket=cache_bucket,
             )
             for it in items:
                 rows.append(
                     {
                         "url": it.get("url", ""),
+                        "video_id": it.get("video_id", ""),
                         "title": it.get("title", ""),
                         "visits": float(it.get("views", 0) or 0),
                         "avg_dwell_sec": float(it.get("avg_dwell_sec", 60) or 60),
                         "content": it.get("description", "") or "",
                         "description": it.get("description", "") or "",
-                        "category": cat,
+                        "category": it.get("category", cat),
                         "thumbnail_url": it.get("thumbnail_url", ""),
                         "channel_title": it.get("channel_title", ""),
                         "published_at": it.get("published_at", ""),
@@ -641,7 +704,17 @@ def load_youtube_df() -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["url", "title", "visits", "avg_dwell_sec", "content", "category"])
     df = pd.DataFrame(rows)
-    df = df.sort_values(["visits", "avg_dwell_sec"], ascending=False).drop_duplicates(subset=["url"], keep="first")
+    hours = df.get("published_at", pd.Series(dtype=str)).apply(_hours_since_published)
+    recency = hours.apply(lambda h: 1.0 / (1.0 + (h / 36.0)) if h is not None else 0.25)
+    reaction = (
+        pd.to_numeric(df.get("comment_count", 0), errors="coerce").fillna(0.0) * 2.0
+        + pd.to_numeric(df.get("like_count", 0), errors="coerce").fillna(0.0) * 0.25
+    )
+    reaction_norm = (reaction / (reaction.max() + 1.0)).fillna(0.0)
+    visits = pd.to_numeric(df.get("visits", 0), errors="coerce").fillna(0.0)
+    visits_norm = (visits / (visits.max() + 1.0)).fillna(0.0)
+    df["raw_rank"] = (visits_norm * 0.70) + (reaction_norm * 0.20) + (recency * 0.10)
+    df = df.sort_values(["raw_rank", "visits", "avg_dwell_sec"], ascending=False).drop_duplicates(subset=["url"], keep="first")
     return df.reset_index(drop=True)
 
 
@@ -661,6 +734,140 @@ def _relative_time_text(iso_dt: str) -> str:
         return ""
 
 
+def _hours_since_published(iso_dt: str) -> Optional[float]:
+    try:
+        s = str(iso_dt or "").replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+        delta = now - dt
+        return max(float(delta.total_seconds() / 3600.0), 0.0)
+    except Exception:
+        return None
+
+
+def _compute_portal_score(df: pd.DataFrame) -> pd.Series:
+    """Hybrid ranking score: engagement + recency + reaction."""
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    def _num_col(name: str) -> pd.Series:
+        if name in df.columns:
+            s = df[name]
+        else:
+            s = pd.Series([0.0] * len(df), index=df.index)
+        return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
+    base = _num_col("engagement_score")
+    comments = _num_col("comment_count")
+    likes = _num_col("like_count")
+    reactions = ((comments * 2.0) + (likes * 0.25)).clip(lower=0.0)
+    react_norm = (reactions / (reactions.max() + 1.0)).fillna(0.0)
+    hours = df.get("published_at", pd.Series(dtype=str)).apply(_hours_since_published)
+    recency = hours.apply(lambda h: 1.0 / (1.0 + (h / 36.0)) if h is not None else 0.25)
+    wb = float(st.session_state.get("portal_base_w", 0.72) or 0.72)
+    wr = float(st.session_state.get("portal_react_w", 0.18) or 0.18)
+    wc = float(st.session_state.get("portal_recency_w", 0.10) or 0.10)
+    return (base * wb) + (react_norm * wr) + (recency * wc)
+
+
+def _log_reco_click(url: str) -> None:
+    counts = st.session_state.get("reco_click_counts", {})
+    if not isinstance(counts, dict):
+        counts = {}
+    u = (url or "").strip()
+    if not u:
+        return
+    counts[u] = int(counts.get(u, 0) or 0) + 1
+    st.session_state["reco_click_counts"] = counts
+
+
+def _log_reco_event(from_url: str, to_url: str, placement: str, category: str = "") -> None:
+    try:
+        os.makedirs(os.path.join(APP_DIR, "data"), exist_ok=True)
+        path = os.path.join(APP_DIR, "data", "reco_events.csv")
+        row = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "from_url": (from_url or "").strip(),
+            "to_url": (to_url or "").strip(),
+            "placement": (placement or "").strip(),
+            "category": (category or "").strip(),
+        }
+        df_row = pd.DataFrame([row])
+        if os.path.exists(path):
+            df_row.to_csv(path, mode="a", index=False, header=False, encoding="utf-8-sig")
+        else:
+            df_row.to_csv(path, mode="w", index=False, header=True, encoding="utf-8-sig")
+    except Exception:
+        pass
+
+
+def _load_reco_events_df() -> pd.DataFrame:
+    path = os.path.join(APP_DIR, "data", "reco_events.csv")
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _decayed_reco_weights(df_events: pd.DataFrame, half_life_hours: float) -> pd.Series:
+    if df_events is None or df_events.empty or "ts" not in df_events.columns:
+        return pd.Series(dtype=float)
+    now = datetime.now()
+    hl = max(float(half_life_hours or 24.0), 1.0)
+    lam = 0.69314718056 / hl
+    ts = pd.to_datetime(df_events["ts"], errors="coerce")
+    hours = (now - ts).dt.total_seconds() / 3600.0
+    hours = hours.fillna(1e9).clip(lower=0)
+    return pd.Series(np.exp(-lam * hours), index=df_events.index)
+
+
+def _reco_click_boost(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series([0.0] * (len(df) if df is not None else 0), index=(df.index if df is not None else None))
+    half_life = float(st.session_state.get("reco_half_life_hours", 24.0) or 24.0)
+    ev = _load_reco_events_df()
+    if ev.empty or "to_url" not in ev.columns:
+        counts = st.session_state.get("reco_click_counts", {})
+        if not isinstance(counts, dict):
+            counts = {}
+        raw = df.get("url", pd.Series(dtype=str)).map(lambda u: float(counts.get(str(u), 0) or 0))
+        return (raw / (raw.max() + 1.0)).fillna(0.0) if not raw.empty else raw
+    decay = _decayed_reco_weights(ev, half_life)
+    weighted = ev.assign(_w=decay).groupby("to_url", dropna=False)["_w"].sum()
+    raw = df.get("url", pd.Series(dtype=str)).map(lambda u: float(weighted.get(str(u), 0.0)))
+    return (raw / (raw.max() + 1.0)).fillna(0.0) if not raw.empty else raw
+
+
+def _category_click_boost(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series([0.0] * (len(df) if df is not None else 0), index=(df.index if df is not None else None))
+    half_life = float(st.session_state.get("reco_half_life_hours", 24.0) or 24.0)
+    ev = _load_reco_events_df()
+    if ev.empty or "category" not in ev.columns:
+        counts = st.session_state.get("clicked_category_counts", {})
+        if not isinstance(counts, dict):
+            counts = {}
+        raw = df.get("category", pd.Series(dtype=str)).map(lambda c: float(counts.get(str(c), 0) or 0))
+        return (raw / (raw.max() + 1.0)).fillna(0.0) if not raw.empty else raw
+    decay = _decayed_reco_weights(ev, half_life)
+    weighted = ev.assign(_w=decay).groupby("category", dropna=False)["_w"].sum()
+    raw = df.get("category", pd.Series(dtype=str)).map(lambda c: float(weighted.get(str(c), 0.0)))
+    return (raw / (raw.max() + 1.0)).fillna(0.0) if not raw.empty else raw
+
+
+def _watch_dwell_boost(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series([0.0] * (len(df) if df is not None else 0), index=(df.index if df is not None else None))
+    by_url = st.session_state.get("watch_dwell_by_url", {})
+    if not isinstance(by_url, dict) or not by_url:
+        return pd.Series([0.0] * len(df), index=df.index)
+    raw = df.get("url", pd.Series(dtype=str)).map(lambda u: float(by_url.get(str(u), 0.0)))
+    if raw.empty:
+        return raw
+    return (raw / (raw.max() + 1.0)).fillna(0.0)
+
+
 def _views_text(v: Any) -> str:
     n = float(v or 0)
     if n >= 1_000_000:
@@ -676,6 +883,7 @@ def refresh_scores() -> None:
         return
     df_raw: pd.DataFrame = st.session_state["df_raw"]
     df_scored = compute_engagement_score(df_raw, weight_visits=weight_visits, weight_dwell=weight_dwell)
+    df_scored["portal_score"] = _compute_portal_score(df_scored)
     st.session_state["df_scored"] = df_scored
     st.session_state["top_df"] = top_by_score(df_scored, top_n=top_n)
     st.session_state["topk_cat_df"] = topk_per_category(df_scored, top_k=top_k_per_category)
@@ -708,9 +916,10 @@ def _save_subscription_state() -> None:
 
 
 def init_state() -> None:
+    st.session_state.setdefault("feed_category", "trend")
     if "df_raw" not in st.session_state:
         try:
-            st.session_state["df_raw"] = load_youtube_df()
+            st.session_state["df_raw"] = load_youtube_df(selected_category=st.session_state.get("feed_category", "trend"))
             st.session_state["data_source"] = "youtube"
             st.session_state["youtube_error"] = ""
         except Exception as e:
@@ -720,6 +929,12 @@ def init_state() -> None:
 
     st.session_state.setdefault("summary_cache", {})  # url -> summary dict
     st.session_state.setdefault("ad_impressions", set())  # (ad|placement|context)
+    st.session_state.setdefault("reco_click_counts", {})  # url -> recommendation clicks
+    st.session_state.setdefault("clicked_category_counts", {})  # category -> recommendation clicks
+    st.session_state.setdefault("watch_history", [])  # recent viewed items with dwell
+    st.session_state.setdefault("watch_dwell_by_url", {})  # url -> total dwell seconds
+    st.session_state.setdefault("watch_dwell_by_cat", {})  # category -> total dwell seconds
+    st.session_state.setdefault("item_opened_at", None)  # current dialog start timestamp
     st.session_state.setdefault("selected_summaries", [])  # list of summary dicts
     st.session_state.setdefault("selected_url", "")
     st.session_state.setdefault("open_dialog", False)
@@ -736,14 +951,14 @@ def init_state() -> None:
     prev_bucket = st.session_state.get("_yt_bucket")
     if st.session_state.get("data_source") == "youtube" and prev_bucket != bucket and not st.session_state.get("_yt_reload_requested"):
         try:
-            st.session_state["df_raw"] = load_youtube_df()
+            st.session_state["df_raw"] = load_youtube_df(selected_category=st.session_state.get("feed_category", "trend"))
             st.session_state["youtube_error"] = ""
         except Exception as e:
             st.session_state["youtube_error"] = str(e)
     st.session_state["_yt_bucket"] = bucket
     if st.session_state.get("_yt_reload_requested"):
         try:
-            st.session_state["df_raw"] = load_youtube_df()
+            st.session_state["df_raw"] = load_youtube_df(selected_category=st.session_state.get("feed_category", "trend"))
             st.session_state["data_source"] = "youtube"
             st.session_state["youtube_error"] = ""
         except Exception as e:
@@ -912,8 +1127,57 @@ def chips_to_html(chips: List[str], max_items: int = 3) -> str:
     return "".join([f"<span class='sp-chip'>{html.escape(str(x))}</span>" for x in items])
 
 
+def _finalize_current_view(reason: str = "switch") -> None:
+    current_url = (st.session_state.get("selected_url") or "").strip()
+    started = st.session_state.get("item_opened_at")
+    if not current_url or started is None:
+        return
+    try:
+        elapsed = max(float(time.time() - float(started)), 0.0)
+    except Exception:
+        return
+    if elapsed < 1.0:
+        return
+
+    row = get_row_by_url(current_url) or {}
+    title = (row.get("title") or current_url).strip()
+    cat = (row.get("category") or "").strip()
+    event = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "url": current_url,
+        "title": title,
+        "category": cat,
+        "dwell_sec": round(elapsed, 2),
+        "reason": reason,
+    }
+    hist = st.session_state.get("watch_history", [])
+    if not isinstance(hist, list):
+        hist = []
+    hist.append(event)
+    st.session_state["watch_history"] = hist[-100:]
+
+    by_url = st.session_state.get("watch_dwell_by_url", {})
+    if not isinstance(by_url, dict):
+        by_url = {}
+    by_url[current_url] = float(by_url.get(current_url, 0.0) or 0.0) + elapsed
+    st.session_state["watch_dwell_by_url"] = by_url
+
+    by_cat = st.session_state.get("watch_dwell_by_cat", {})
+    if not isinstance(by_cat, dict):
+        by_cat = {}
+    if cat:
+        by_cat[cat] = float(by_cat.get(cat, 0.0) or 0.0) + elapsed
+    st.session_state["watch_dwell_by_cat"] = by_cat
+
+    st.session_state["item_opened_at"] = time.time()
+
+
 def open_item(url: str) -> None:
+    prev_url = (st.session_state.get("selected_url") or "").strip()
+    if prev_url and prev_url != (url or "").strip():
+        _finalize_current_view("switch")
     st.session_state["selected_url"] = url
+    st.session_state["item_opened_at"] = time.time()
     st.session_state["open_dialog"] = True
     st.rerun()
 
@@ -1032,8 +1296,40 @@ with tab_feed:
     topk_cat_df: pd.DataFrame = st.session_state.get("topk_cat_df", pd.DataFrame())
     search_q = (st.session_state.get("search_query") or "").strip().lower()
 
+    feed_options = [c for c in FEED_CATEGORY_ORDER if c in _youtube_query_groups()]
+    if not feed_options:
+        feed_options = FEED_CATEGORY_ORDER
+    current_feed_cat = st.session_state.get("feed_category", "trend")
+    if current_feed_cat not in feed_options:
+        current_feed_cat = feed_options[0]
+        st.session_state["feed_category"] = current_feed_cat
+    feed_cat = st.selectbox(
+        "Category",
+        options=feed_options,
+        index=feed_options.index(current_feed_cat),
+        format_func=lambda c: f"{FEED_CATEGORY_EMOJI.get(c, '🔥')} {c}",
+        key="feed_category_selector",
+    )
+    if feed_cat != st.session_state.get("feed_category"):
+        st.session_state["feed_category"] = feed_cat
+        try:
+            st.session_state["df_raw"] = load_youtube_df(selected_category=feed_cat)
+            st.session_state["data_source"] = "youtube"
+            st.session_state["youtube_error"] = ""
+            refresh_scores()
+        except Exception as e:
+            st.session_state["youtube_error"] = str(e)
+            st.session_state["df_raw"] = load_demo_df()
+            st.session_state["data_source"] = "demo"
+            refresh_scores()
+        st.rerun()
+
     if st.session_state.get("data_source") == "demo":
-        st.info("현재 **데모 데이터**로 실행 중입니다. (운영자 모드에서 실제 데이터로 교체 가능)")
+        yt_err = str(st.session_state.get("youtube_error", "") or "")
+        if "YOUTUBE_API_KEY" in yt_err:
+            st.info("YouTube API key가 없어 데모 피드로 표시 중입니다. 운영자에게 YOUTUBE_API_KEY 설정을 요청하세요.")
+        else:
+            st.info("현재 데모 데이터로 실행 중입니다.")
 
     if df_scored.empty:
         st.warning("데이터가 없습니다. (운영자 모드 → 데이터 탭에서 넣을 수 있어요)")
@@ -1042,25 +1338,31 @@ with tab_feed:
     # Category stats for menu
     cat_stats = (
         df_scored.groupby("category", as_index=False)
-        .agg(items=("url", "count"), total_score=("engagement_score", "sum"))
+        .agg(items=("url", "count"), total_score=("portal_score", "sum"))
         .sort_values(["total_score", "items"], ascending=False)
     )
     categories = cat_stats["category"].tolist()
     if not categories:
         categories = ["전체"]
 
-    # Onboarding: interest categories (user-friendly)
-    if not st.session_state.get("interest_cats"):
-        # preselect top 5 categories
-        st.session_state["interest_cats"] = categories[:5]
-
-    interest_cats = st.multiselect(
-        "관심 카테고리(추천 피드)",
-        options=categories,
-        default=st.session_state.get("interest_cats", categories[:5]),
-        help="선택한 카테고리 위주로 '실시간 베스트'를 보여줘요.",
-    )
+    interest_cats = [st.session_state.get("feed_category", feed_cat)]
     st.session_state["interest_cats"] = interest_cats
+
+    watch_hist = st.session_state.get("watch_history", [])
+    if isinstance(watch_hist, list) and watch_hist:
+        recent = pd.DataFrame(watch_hist)
+        if not recent.empty and "url" in recent.columns:
+            recent = recent.sort_values("ts", ascending=False).drop_duplicates(subset=["url"], keep="first").head(5)
+            st.markdown("### Continue watching")
+            cols_cw = st.columns(5, gap="small")
+            for i, rec in enumerate(recent.to_dict(orient="records"), start=1):
+                with cols_cw[(i - 1) % 5]:
+                    u = str(rec.get("url", "") or "").strip()
+                    t0 = str(rec.get("title", "") or u).strip()
+                    d0 = float(rec.get("dwell_sec", 0) or 0)
+                    lbl = f"{t0[:26]}{'...' if len(t0) > 26 else ''}\n{int(d0)}s watched"
+                    if st.button(lbl, key=f"cw_{i}_{abs(hash(u)) % 100000}"):
+                        open_item(u)
 
     # Filter base
     df_view = df_scored.copy()
@@ -1075,7 +1377,17 @@ with tab_feed:
         )
         df_view = df_view[mask]
 
-    df_view = df_view.sort_values(["engagement_score", "visits", "avg_dwell_sec"], ascending=False)
+    df_view["cat_pref_boost"] = _category_click_boost(df_view)
+    df_view["watch_boost"] = _watch_dwell_boost(df_view)
+    feed_base_w = float(st.session_state.get("personal_base_w", 0.9) or 0.9)
+    feed_cat_w = float(st.session_state.get("personal_cat_w", 0.1) or 0.1)
+    feed_watch_w = max(0.0, 1.0 - (feed_base_w + feed_cat_w))
+    df_view["personal_score"] = (
+        pd.to_numeric(df_view.get("portal_score", 0), errors="coerce").fillna(0.0) * feed_base_w
+        + df_view["cat_pref_boost"] * feed_cat_w
+        + df_view["watch_boost"] * feed_watch_w
+    )
+    df_view = df_view.sort_values(["personal_score", "portal_score", "engagement_score", "visits"], ascending=False)
 
     main_col, side_col = st.columns([2.25, 1], gap="large")
 
@@ -1281,7 +1593,7 @@ with tab_feed:
         st.subheader(t("category_top"))
         selected_cat = st.selectbox("카테고리", options=categories, index=0)
         cat_items = topk_cat_df[topk_cat_df["category"] == selected_cat].copy()
-        cat_items = cat_items.sort_values(["engagement_score", "visits", "avg_dwell_sec"], ascending=False).head(10)
+        cat_items = cat_items.sort_values(["portal_score", "engagement_score", "visits", "avg_dwell_sec"], ascending=False).head(10)
 
         if cat_items.empty:
             st.caption("이 카테고리에 표시할 콘텐츠가 없습니다.")
@@ -1502,9 +1814,18 @@ with tab_feed:
             st.markdown("**Discussion prompt**")
             st.write(discussion)
 
-            rec_base = df_scored.sort_values(
-                ["engagement_score", "visits", "avg_dwell_sec"], ascending=False
-            ).copy()
+            rec_base = df_scored.copy()
+            rec_base["reco_boost"] = _reco_click_boost(rec_base)
+            reco_base_w = float(st.session_state.get("reco_base_w", 0.9) or 0.9)
+            reco_click_w = float(st.session_state.get("reco_click_w", 0.1) or 0.1)
+            rec_base["reco_rank"] = (
+                pd.to_numeric(rec_base.get("portal_score", 0), errors="coerce").fillna(0.0) * reco_base_w
+                + rec_base["reco_boost"] * reco_click_w
+            )
+            rec_base = rec_base.sort_values(
+                ["reco_rank", "portal_score", "engagement_score", "visits"],
+                ascending=False,
+            )
             rec_base = rec_base[rec_base["url"] != selected_url].drop_duplicates(subset=["url"], keep="first")
 
             same_cat = rec_base[rec_base["category"] == cat]
@@ -1517,6 +1838,15 @@ with tab_feed:
                     rec_url = rec.get("url", "")
                     rec_title = (rec.get("title") or rec_url).strip()
                     if st.button(f"{i}. {rec_title}", key=f"also_{selected_url}_{i}"):
+                        rec_cat = str(rec.get("category", "") or "").strip()
+                        ccounts = st.session_state.get("clicked_category_counts", {})
+                        if not isinstance(ccounts, dict):
+                            ccounts = {}
+                        if rec_cat:
+                            ccounts[rec_cat] = int(ccounts.get(rec_cat, 0) or 0) + 1
+                            st.session_state["clicked_category_counts"] = ccounts
+                        _log_reco_click(rec_url)
+                        _log_reco_event(selected_url, rec_url, "people_also_viewed", rec_cat)
                         open_item(rec_url)
             else:
                 st.caption("?? ??? ????.")
@@ -1539,10 +1869,34 @@ with tab_feed:
 
             st.markdown("**Next up**")
             if not next_df.empty:
+                next_first = next_df.iloc[0].to_dict()
+                next_first_url = str(next_first.get("url", "") or "").strip()
+                next_first_title = str(next_first.get("title", "") or next_first_url).strip()
+                if next_first_url:
+                    if st.button(f"▶ Play next: {next_first_title[:42]}", key=f"play_next_{selected_url}", type="primary"):
+                        rec_cat = str(next_first.get("category", "") or "").strip()
+                        ccounts = st.session_state.get("clicked_category_counts", {})
+                        if not isinstance(ccounts, dict):
+                            ccounts = {}
+                        if rec_cat:
+                            ccounts[rec_cat] = int(ccounts.get(rec_cat, 0) or 0) + 1
+                            st.session_state["clicked_category_counts"] = ccounts
+                        _log_reco_click(next_first_url)
+                        _log_reco_event(selected_url, next_first_url, "play_next", rec_cat)
+                        open_item(next_first_url)
                 for i, rec in enumerate(next_df.to_dict(orient="records"), start=1):
                     rec_url = rec.get("url", "")
                     rec_title = (rec.get("title") or rec_url).strip()
                     if st.button(f"{i}. {rec_title}", key=f"next_{selected_url}_{i}"):
+                        rec_cat = str(rec.get("category", "") or "").strip()
+                        ccounts = st.session_state.get("clicked_category_counts", {})
+                        if not isinstance(ccounts, dict):
+                            ccounts = {}
+                        if rec_cat:
+                            ccounts[rec_cat] = int(ccounts.get(rec_cat, 0) or 0) + 1
+                            st.session_state["clicked_category_counts"] = ccounts
+                        _log_reco_click(rec_url)
+                        _log_reco_event(selected_url, rec_url, "next_up", rec_cat)
                         open_item(rec_url)
             else:
                 st.caption("?? ??? ????.")
@@ -1674,6 +2028,7 @@ with tab_feed:
                 st.markdown(f"[Open source]({selected_url})")
             with a4:
                 if st.button("Close", key=f"dlg_close::{cache_key}"):
+                    _finalize_current_view("close")
                     st.session_state["open_dialog"] = False
                     st.rerun()
 
@@ -2043,6 +2398,43 @@ if admin_mode and tab_insights is not None:
                 with st.expander(f"{c['label']} (n={len(c['items'])})", expanded=False):
                     for it in c["items"]:
                         st.write(f"- {it.get('title')} ({it.get('url')})")
+
+        st.divider()
+        st.markdown("### Recommendation Loop Metrics")
+        reco_df = _load_reco_events_df()
+        if reco_df.empty:
+            st.caption("No recommendation click events yet.")
+        else:
+            st.caption(f"events: {len(reco_df)}")
+            a1, a2 = st.columns([1, 1])
+            with a1:
+                st.download_button(
+                    "Download reco events CSV",
+                    data=reco_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"staypick_reco_events_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                )
+            with a2:
+                if st.button("Reset reco events", key="reset_reco_events"):
+                    try:
+                        path = os.path.join(APP_DIR, "data", "reco_events.csv")
+                        if os.path.exists(path):
+                            os.remove(path)
+                    except Exception:
+                        pass
+                    st.session_state["reco_click_counts"] = {}
+                    st.session_state["clicked_category_counts"] = {}
+                    st.rerun()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("People also viewed", int((reco_df["placement"] == "people_also_viewed").sum()) if "placement" in reco_df.columns else 0)
+            c2.metric("Next up", int((reco_df["placement"] == "next_up").sum()) if "placement" in reco_df.columns else 0)
+            c3.metric("Unique targets", int(reco_df["to_url"].nunique()) if "to_url" in reco_df.columns else 0)
+            if "placement" in reco_df.columns:
+                top_place = reco_df.groupby("placement", as_index=False).size().sort_values("size", ascending=False)
+                st.dataframe(top_place, use_container_width=True)
+            if "category" in reco_df.columns:
+                top_cat = reco_df.groupby("category", as_index=False).size().sort_values("size", ascending=False)
+                st.dataframe(top_cat.head(10), use_container_width=True)
 
 
 

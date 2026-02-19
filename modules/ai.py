@@ -214,7 +214,7 @@ class OpenAIService:
 - localized_title: 현재 언어({language})로 자연스럽고 클릭을 부르는 제목(과장 금지)
 - hook: 카드에서 클릭을 유도하는 1문장(사실 기반, 10~22단어/글자 권장)
 - one_liner: 핵심 요지 1문장
-- key_points: 짧은 불릿 3~8개
+- key_points: 짧은 불릿 최대 3개
 - tags: 검색/추천에 유리한 키워드 3~10개
 
 [원문 텍스트]

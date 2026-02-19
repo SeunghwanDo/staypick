@@ -47,6 +47,7 @@ def fetch_youtube_videos(
     lang: str,
     max_results: int,
     published_days: int = 7,
+    category: str = "",
 ) -> List[dict]:
     api_key = (os.environ.get("YOUTUBE_API_KEY") or "").strip()
     if not api_key:
@@ -95,6 +96,7 @@ def fetch_youtube_videos(
         out.append(
             {
                 "url": f"https://www.youtube.com/watch?v={vid}",
+                "video_id": vid,
                 "title": str(snippet.get("title", "")).strip(),
                 "channel_title": str(snippet.get("channelTitle", "")).strip(),
                 "thumbnail_url": _pick_thumbnail(snippet),
@@ -105,7 +107,7 @@ def fetch_youtube_videos(
                 "content": "",
                 "description": str(snippet.get("description", "")).strip(),
                 "avg_dwell_sec": float(max(60, int(math.log1p(max(views, 0)) * 20))),
+                "category": (category or "").strip(),
             }
         )
     return out
-
