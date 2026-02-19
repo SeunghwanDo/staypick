@@ -826,6 +826,22 @@ def _looks_korean_item(item: Dict[str, Any]) -> bool:
     return bool(re.search(r"[가-힣]", txt))
 
 
+def _is_political_item(item: Dict[str, Any]) -> bool:
+    txt = " ".join(
+        [
+            str(item.get("title", "") or ""),
+            str(item.get("channel_title", "") or ""),
+            str(item.get("description", "") or ""),
+        ]
+    ).lower()
+    blocked = [
+        "정치", "선거", "국회", "여야", "정당", "대통령", "탄핵", "총선", "대선",
+        "민주당", "국민의힘", "윤석열", "이재명", "조국", "한동훈",
+        "trump", "biden", "election", "parliament", "president",
+    ]
+    return any(k in txt for k in blocked)
+
+
 def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
     region = str(st.session_state.get("yt_region", "KR") or "KR").upper()
     lang = str(st.session_state.get("yt_lang", "ko") or "ko")
@@ -846,7 +862,12 @@ def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
     kr_ratio = float(st.session_state.get("yt_kr_ratio", 0.7) or 0.7)
     kr_ratio = min(max(kr_ratio, 0.5), 0.9)
     for cat, queries in active_groups.items():
-        for q in queries[:1]:
+        queries_to_use = [str(x).strip() for x in (queries or []) if str(x).strip()][:2]
+        if selected_category and cat == selected_category and queries_to_use:
+            booster = f"{queries_to_use[0]} 쇼츠"
+            if booster not in queries_to_use:
+                queries_to_use.append(booster)
+        for q in queries_to_use:
             kr_n = max(1, int(round(max_per_query * kr_ratio)))
             gl_n = max(1, max_per_query - kr_n)
             fetch_plan = [
@@ -872,6 +893,8 @@ def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
                 else:
                     picked_items = items[:take_n]
                 for it in picked_items:
+                    if _is_political_item(it):
+                        continue
                     views_v = float(it.get("views", 0) or 0)
                     rows.append(
                         {
