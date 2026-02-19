@@ -533,25 +533,23 @@ def make_cache_key(url: str, lang: Optional[str], age: Optional[str]) -> str:
 
 
 def get_cached_summary(
+    cache: Dict[str, Dict[str, Any]],
     url: str,
-    language: Optional[str] = None,
-    age_group: Optional[str] = None,
-    cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    lang: Optional[str] = None,
+    age: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    cache = cache if cache is not None else st.session_state.get("summary_cache", {})
-    key = make_cache_key(url, language, age_group)
-    return cache.get(key) or cache.get(url)
+    key = make_cache_key(url, lang, age)
+    return cache.get(key)
 
 
 def set_cached_summary(
+    cache: Dict[str, Dict[str, Any]],
     url: str,
     summary: Dict[str, Any],
-    language: Optional[str] = None,
-    age_group: Optional[str] = None,
-    cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    lang: Optional[str] = None,
+    age: Optional[str] = None,
 ) -> None:
-    cache = cache if cache is not None else st.session_state.get("summary_cache", {})
-    key = make_cache_key(url, language, age_group)
+    key = make_cache_key(url, lang, age)
     cache[key] = summary
 
 
@@ -794,7 +792,7 @@ with tab_feed:
                     cat = row.get("category", "전체")
                     content = (row.get("content") or "").strip()
                     cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-                    s = get_cached_summary(url, cache=cache)
+                    s = get_cached_summary(cache, url)
                     display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
                     if teaser_mode == "ai" and s:
                         teaser = (s.get("hook") or s.get("one_liner") or "")
@@ -882,7 +880,7 @@ with tab_feed:
                 url = row.get("url", "")
                 content = (row.get("content") or "").strip()
                 cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-                s = get_cached_summary(url, cache=cache)
+                s = get_cached_summary(cache, url)
                 display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
                 if teaser_mode == "ai" and s:
                     teaser = (s.get("hook") or s.get("one_liner") or "")
@@ -936,7 +934,7 @@ with tab_feed:
             source_title = (row.get("title") or "").strip() or row.get("url")
             url = row.get("url", "")
             cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-            s = get_cached_summary(url, cache=cache)
+            s = get_cached_summary(cache, url)
             display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
             if st.button(f"{i}. {display_title}", key=f"hot_{i}"):
                 open_item(url)
@@ -980,7 +978,7 @@ with tab_feed:
         current_lang = current_summary_language()
         current_age = st.session_state.get("age_group", "general")
         cache_key = make_cache_key(selected_url, current_lang, current_age)
-        existing = get_cached_summary(selected_url, language=current_lang, age_group=current_age, cache=cache)
+        existing = get_cached_summary(cache, selected_url, lang=current_lang, age=current_age)
 
         display_title = (existing.get("localized_title") or existing.get("title") or source_title) if existing else source_title
 
@@ -1076,13 +1074,15 @@ with tab_feed:
                 for i, rec in enumerate(people_df.to_dict(orient="records"), start=1):
                     rec_url = rec.get("url", "")
                     rec_title = (rec.get("title") or rec_url).strip()
-                    if st.button(f"{i}. {rec_title}", key=f"pav_open::{cache_key}::{i}"):
+                    if st.button(f"{i}. {rec_title}", key=f"also_{selected_url}_{i}"):
                         open_item(rec_url)
             else:
                 st.caption("?? ??? ????.")
 
             interest_set = set(st.session_state.get("interest_cats", []) or [])
-            top_interest = rec_base[rec_base["category"].isin(interest_set)] if interest_set else rec_base
+            focus_set = set(interest_set)
+            focus_set.add(cat)
+            top_interest = rec_base[rec_base["category"].isin(focus_set)] if focus_set else rec_base
             top_interest = top_interest.head(50)
             next_top = top_interest.head(4)
             rand_pool = rec_base.head(20)
@@ -1100,7 +1100,7 @@ with tab_feed:
                 for i, rec in enumerate(next_df.to_dict(orient="records"), start=1):
                     rec_url = rec.get("url", "")
                     rec_title = (rec.get("title") or rec_url).strip()
-                    if st.button(f"{i}. {rec_title}", key=f"next_open::{cache_key}::{i}"):
+                    if st.button(f"{i}. {rec_title}", key=f"next_{selected_url}_{i}"):
                         open_item(rec_url)
             else:
                 st.caption("?? ??? ????.")
@@ -1191,7 +1191,7 @@ with tab_feed:
                 if summary is None:
                     st.session_state[did_flag] = False
                 else:
-                    set_cached_summary(selected_url, summary, language=current_lang, age_group=current_age, cache=cache)
+                    set_cached_summary(cache, selected_url, summary, lang=current_lang, age=current_age)
                     st.session_state["summary_cache"] = cache
                     st.rerun()
 
@@ -1200,14 +1200,14 @@ with tab_feed:
                 st.session_state[did_flag] = True
                 summary = _build_summary()
                 if summary:
-                    set_cached_summary(selected_url, summary, language=current_lang, age_group=current_age, cache=cache)
+                    set_cached_summary(cache, selected_url, summary, lang=current_lang, age=current_age)
                     st.session_state["summary_cache"] = cache
                     st.success("?? ?? ??")
                     st.rerun()
 
         # 9) Actions area
         cache = st.session_state.get("summary_cache", {})
-        s = get_cached_summary(selected_url, language=current_lang, age_group=current_age, cache=cache)
+        s = get_cached_summary(cache, selected_url, lang=current_lang, age=current_age)
         if s:
             st.markdown("**Actions**")
             a1, a2, a3, a4 = st.columns([1.1, 1, 1, 0.8])
@@ -1507,10 +1507,10 @@ if admin_mode and tab_insights is not None:
                 content_from_csv = (row.get("content", "") or "").strip()
 
                 cached = get_cached_summary(
+                    cache,
                     url,
-                    language=current_summary_language(),
-                    age_group=st.session_state.get("age_group", "general"),
-                    cache=cache,
+                    lang=current_summary_language(),
+                    age=st.session_state.get("age_group", "general"),
                 )
                 if cached:
                     summaries.append(cached)
@@ -1540,11 +1540,11 @@ if admin_mode and tab_insights is not None:
                             age_group=st.session_state.get("age_group", "general"),
                         )
                         set_cached_summary(
+                            cache,
                             url,
                             summary,
-                            language=current_summary_language(),
-                            age_group=st.session_state.get("age_group", "general"),
-                            cache=cache,
+                            lang=current_summary_language(),
+                            age=st.session_state.get("age_group", "general"),
                         )
                         summaries.append(summary)
                     except Exception as e:
