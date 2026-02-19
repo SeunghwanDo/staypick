@@ -270,12 +270,12 @@ DEMO_CSV_PATH = os.path.join(APP_DIR, "sample_data", "metrics_sample_fun_with_co
 SUBSCRIPTION_STATE_PATH = os.path.join(APP_DIR, "data", "subscription_state.json")
 YOUTUBE_SNAPSHOT_PATH = os.path.join(APP_DIR, "data", "youtube_last_success.csv")
 DEFAULT_YT_QUERY_GROUPS: Dict[str, List[str]] = {
-    "game": ["game recommendation", "steam game", "mobile game"],
-    "finance": ["personal finance", "stock beginner", "saving tips"],
-    "love": ["dating story", "relationship advice", "breakup story"],
-    "life": ["life hacks", "cleaning tips", "cooking tips"],
-    "tech": ["tech trend", "ai tool", "gadgets"],
-    "trend": ["viral video", "trending now", "hot issue"],
+    "game": ["게임 추천", "스팀 게임", "모바일 게임"],
+    "finance": ["재테크", "주식 입문", "절약"],
+    "love": ["연애 썰", "썸", "이별"],
+    "life": ["생활 꿀팁", "청소 꿀팁", "요리 꿀팁"],
+    "tech": ["테크 트렌드", "AI 툴", "가젯 리뷰"],
+    "trend": ["실시간 이슈", "요즘 화제", "급상승 영상"],
 }
 FEED_CATEGORY_ORDER = ["game", "finance", "love", "life", "tech", "trend"]
 FEED_CATEGORY_EMOJI = {
@@ -763,8 +763,10 @@ def _cached_youtube_query(
     published_days: int,
     category: str,
     cache_bucket: int,
+    query_version: str = "v1",
 ) -> List[Dict[str, Any]]:
     _ = cache_bucket
+    _ = query_version
     return fetch_youtube_videos(
         query=query,
         region=region,
@@ -797,6 +799,17 @@ def _youtube_query_groups() -> Dict[str, List[str]]:
     return {k: list(v) for k, v in DEFAULT_YT_QUERY_GROUPS.items()}
 
 
+def _looks_korean_item(item: Dict[str, Any]) -> bool:
+    txt = " ".join(
+        [
+            str(item.get("title", "") or ""),
+            str(item.get("channel_title", "") or ""),
+            str(item.get("description", "") or ""),
+        ]
+    )
+    return bool(re.search(r"[가-힣]", txt))
+
+
 def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
     region = str(st.session_state.get("yt_region", "KR") or "KR").upper()
     lang = str(st.session_state.get("yt_lang", "ko") or "ko")
@@ -825,16 +838,24 @@ def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
                 (region if region != "KR" else "US", (lang if lang != "ko" else "en"), gl_n),
             ]
             for rg, lg, take_n in fetch_plan:
+                fetch_n = min(20, (take_n * 2) if str(rg).upper() == "KR" else take_n)
                 items = _cached_youtube_query(
                     query=q,
                     region=rg,
                     lang=lg,
-                    max_results=take_n,
+                    max_results=fetch_n,
                     published_days=published_days,
                     category=cat,
                     cache_bucket=cache_bucket,
+                    query_version="v2_kr_priority",
                 )
-                for it in items:
+                if str(rg).upper() == "KR" and items:
+                    ko_first = [it for it in items if _looks_korean_item(it)]
+                    rest = [it for it in items if not _looks_korean_item(it)]
+                    picked_items = (ko_first + rest)[:take_n]
+                else:
+                    picked_items = items[:take_n]
+                for it in picked_items:
                     views_v = float(it.get("views", 0) or 0)
                     rows.append(
                         {
@@ -1099,6 +1120,11 @@ def _save_subscription_state() -> None:
 
 
 def init_state() -> None:
+    query_profile_version = "v2_kr_priority"
+    if st.session_state.get("_yt_query_profile_version") != query_profile_version:
+        st.session_state["_yt_query_profile_version"] = query_profile_version
+        st.session_state["_yt_reload_requested"] = True
+
     st.session_state.setdefault("feed_category", "trend")
     if "df_raw" not in st.session_state:
         try:
