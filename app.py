@@ -883,6 +883,8 @@ def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
                             "avg_dwell_sec": float(it.get("avg_dwell_sec", 60) or 60),
                             "content": it.get("description", "") or "",
                             "description": it.get("description", "") or "",
+                            "duration_sec": float(it.get("duration_sec", 0) or 0),
+                            "is_short": bool(it.get("is_short", False)),
                             "category": it.get("category", cat),
                             "thumbnail_url": it.get("thumbnail_url", ""),
                             "channel_title": it.get("channel_title", ""),
@@ -907,6 +909,8 @@ def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
             avg_dwell_sec=("avg_dwell_sec", "max"),
             content=("content", "first"),
             description=("description", "first"),
+            duration_sec=("duration_sec", "max"),
+            is_short=("is_short", "max"),
             category=("category", "first"),
             thumbnail_url=("thumbnail_url", "first"),
             channel_title=("channel_title", "first"),
@@ -1090,8 +1094,10 @@ def _views_text(v: Any) -> str:
 
 def _is_shorts_item(row: Dict[str, Any]) -> bool:
     t = str(row.get("title", "") or "").lower()
+    d = float(row.get("duration_sec", 0) or 0)
     u = str(row.get("url", "") or "").lower()
-    return ("shorts" in t) or ("/shorts/" in u) or ("#shorts" in t)
+    desc = str(row.get("description", "") or "").lower()
+    return bool(row.get("is_short", False)) or (d > 0 and d <= 180) or ("shorts" in t) or ("/shorts/" in u) or ("#shorts" in t) or ("#shorts" in desc)
 
 
 def refresh_scores() -> None:
@@ -1633,13 +1639,14 @@ with tab_feed:
     if current_feed_cat not in feed_options:
         current_feed_cat = feed_options[0]
         st.session_state["feed_category"] = current_feed_cat
-    feed_cat = st.selectbox(
-        "Category",
-        options=feed_options,
-        index=feed_options.index(current_feed_cat),
-        format_func=lambda c: f"{FEED_CATEGORY_EMOJI.get(c, '🔥')} {c}",
-        key="feed_category_selector",
-    )
+    feed_cat = current_feed_cat
+    cat_pick_cols = st.columns(len(feed_options), gap="small")
+    for idx, opt in enumerate(feed_options, start=1):
+        with cat_pick_cols[idx - 1]:
+            label = f"{FEED_CATEGORY_EMOJI.get(opt, '🔥')} {opt}"
+            is_active = opt == current_feed_cat
+            if st.button(label, key=f"feed_cat_btn_{opt}_{idx}", type=("primary" if is_active else "secondary"), use_container_width=True):
+                feed_cat = opt
     c_auto1, c_auto2, c_auto3 = st.columns([1.2, 1.2, 1.2])
     with c_auto1:
         st.toggle("Autoplay next", key="autoplay_next", help="상세 모달에서 닫기를 누르면 다음 추천으로 자동 이동합니다.")
@@ -1924,9 +1931,9 @@ with tab_feed:
         if not best:
             st.caption("조건에 맞는 콘텐츠가 없어요. 관심 카테고리를 늘리거나 검색을 지워보세요.")
         else:
-            cols = st.columns(3, gap="small")
+            cols = st.columns(4, gap="small")
             for i, row in enumerate(best, start=1):
-                with cols[(i - 1) % 3]:
+                with cols[(i - 1) % 4]:
                     source_title = (row.get("title") or "").strip() or row.get("url")
                     url = row.get("url", "")
                     cat = row.get("category", "전체")

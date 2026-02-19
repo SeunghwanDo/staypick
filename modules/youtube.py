@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 from urllib.parse import urlencode
@@ -41,6 +42,19 @@ def _pick_thumbnail(snippet: Dict) -> str:
         if u:
             return u
     return ""
+
+
+def _parse_iso8601_duration_to_sec(value: str) -> int:
+    s = str(value or "").strip().upper()
+    if not s:
+        return 0
+    m = re.match(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", s)
+    if not m:
+        return 0
+    h = int(m.group(1) or 0)
+    mi = int(m.group(2) or 0)
+    sec = int(m.group(3) or 0)
+    return (h * 3600) + (mi * 60) + sec
 
 
 def fetch_youtube_videos(
@@ -94,7 +108,9 @@ def fetch_youtube_videos(
             continue
         snippet = (it or {}).get("snippet") or {}
         stats = (it or {}).get("statistics") or {}
+        details = (it or {}).get("contentDetails") or {}
         views = _to_int(stats.get("viewCount"), 0)
+        duration_sec = _parse_iso8601_duration_to_sec(details.get("duration"))
         out.append(
             {
                 "url": f"https://www.youtube.com/watch?v={vid}",
@@ -109,6 +125,8 @@ def fetch_youtube_videos(
                 "content": "",
                 "description": str(snippet.get("description", "")).strip(),
                 "avg_dwell_sec": float(max(60, int(math.log1p(max(views, 0)) * 20))),
+                "duration_sec": duration_sec,
+                "is_short": bool(duration_sec > 0 and duration_sec <= 180),
                 "category": (category or "").strip(),
             }
         )
