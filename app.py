@@ -27,7 +27,7 @@ from modules.youtube import fetch_youtube_videos
 
 load_dotenv()
 
-st.set_page_config(page_title="StayPick", layout="wide")
+st.set_page_config(page_title="StayPick", layout="wide", initial_sidebar_state="collapsed")
 
 
 # ---------------------------
@@ -149,6 +149,7 @@ st.markdown(PORTAL_CSS, unsafe_allow_html=True)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEMO_CSV_PATH = os.path.join(APP_DIR, "sample_data", "metrics_sample_fun_with_content.csv")
 SUBSCRIPTION_STATE_PATH = os.path.join(APP_DIR, "data", "subscription_state.json")
+YOUTUBE_SNAPSHOT_PATH = os.path.join(APP_DIR, "data", "youtube_last_success.csv")
 DEFAULT_YT_QUERY_GROUPS: Dict[str, List[str]] = {
     "game": ["game recommendation", "steam game", "mobile game"],
     "finance": ["personal finance", "stock beginner", "saving tips"],
@@ -166,6 +167,27 @@ FEED_CATEGORY_EMOJI = {
     "tech": "🤖",
     "trend": "🔥",
 }
+
+
+def _save_youtube_snapshot(df: pd.DataFrame) -> None:
+    try:
+        if df is None or df.empty:
+            return
+        os.makedirs(os.path.dirname(YOUTUBE_SNAPSHOT_PATH), exist_ok=True)
+        df.to_csv(YOUTUBE_SNAPSHOT_PATH, index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
+
+
+def _load_youtube_snapshot() -> pd.DataFrame:
+    try:
+        if os.path.exists(YOUTUBE_SNAPSHOT_PATH):
+            df = pd.read_csv(YOUTUBE_SNAPSHOT_PATH)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                return df
+    except Exception:
+        pass
+    return pd.DataFrame()
 
 
 def _save_subscription_state() -> None:
@@ -920,12 +942,19 @@ def init_state() -> None:
     if "df_raw" not in st.session_state:
         try:
             st.session_state["df_raw"] = load_youtube_df(selected_category=st.session_state.get("feed_category", "trend"))
+            _save_youtube_snapshot(st.session_state["df_raw"])
             st.session_state["data_source"] = "youtube"
             st.session_state["youtube_error"] = ""
         except Exception as e:
-            st.session_state["df_raw"] = load_demo_df()
-            st.session_state["data_source"] = "demo"
-            st.session_state["youtube_error"] = str(e)
+            snap = _load_youtube_snapshot()
+            if not snap.empty:
+                st.session_state["df_raw"] = snap
+                st.session_state["data_source"] = "youtube_snapshot"
+                st.session_state["youtube_error"] = f"{e} (fallback: last successful snapshot)"
+            else:
+                st.session_state["df_raw"] = pd.DataFrame(columns=["url", "title", "visits", "avg_dwell_sec", "content", "category"])
+                st.session_state["data_source"] = "youtube"
+                st.session_state["youtube_error"] = str(e)
 
     st.session_state.setdefault("summary_cache", {})  # url -> summary dict
     st.session_state.setdefault("ad_impressions", set())  # (ad|placement|context)
@@ -935,6 +964,11 @@ def init_state() -> None:
     st.session_state.setdefault("watch_dwell_by_url", {})  # url -> total dwell seconds
     st.session_state.setdefault("watch_dwell_by_cat", {})  # category -> total dwell seconds
     st.session_state.setdefault("item_opened_at", None)  # current dialog start timestamp
+    st.session_state.setdefault("autoplay_next", True)
+    st.session_state.setdefault("autoplay_delay_sec", 3)
+    st.session_state.setdefault("_dlg_next_url", "")
+    st.session_state.setdefault("hidden_urls", [])
+    st.session_state.setdefault("hidden_recent", [])
     st.session_state.setdefault("selected_summaries", [])  # list of summary dicts
     st.session_state.setdefault("selected_url", "")
     st.session_state.setdefault("open_dialog", False)
@@ -952,6 +986,7 @@ def init_state() -> None:
     if st.session_state.get("data_source") == "youtube" and prev_bucket != bucket and not st.session_state.get("_yt_reload_requested"):
         try:
             st.session_state["df_raw"] = load_youtube_df(selected_category=st.session_state.get("feed_category", "trend"))
+            _save_youtube_snapshot(st.session_state["df_raw"])
             st.session_state["youtube_error"] = ""
         except Exception as e:
             st.session_state["youtube_error"] = str(e)
@@ -959,12 +994,17 @@ def init_state() -> None:
     if st.session_state.get("_yt_reload_requested"):
         try:
             st.session_state["df_raw"] = load_youtube_df(selected_category=st.session_state.get("feed_category", "trend"))
+            _save_youtube_snapshot(st.session_state["df_raw"])
             st.session_state["data_source"] = "youtube"
             st.session_state["youtube_error"] = ""
         except Exception as e:
-            st.session_state["df_raw"] = load_demo_df()
-            st.session_state["data_source"] = "demo"
-            st.session_state["youtube_error"] = str(e)
+            snap = _load_youtube_snapshot()
+            if not snap.empty:
+                st.session_state["df_raw"] = snap
+                st.session_state["data_source"] = "youtube_snapshot"
+                st.session_state["youtube_error"] = f"{e} (fallback: last successful snapshot)"
+            else:
+                st.session_state["youtube_error"] = str(e)
         st.session_state["_yt_reload_requested"] = False
     if "_subscription_loaded" not in st.session_state:
         ss = _load_subscription_state()
@@ -1147,6 +1187,8 @@ def _finalize_current_view(reason: str = "switch") -> None:
         "url": current_url,
         "title": title,
         "category": cat,
+        "thumbnail_url": str(row.get("thumbnail_url", "") or "").strip(),
+        "channel_title": str(row.get("channel_title", "") or "").strip(),
         "dwell_sec": round(elapsed, 2),
         "reason": reason,
     }
@@ -1172,6 +1214,51 @@ def _finalize_current_view(reason: str = "switch") -> None:
     st.session_state["item_opened_at"] = time.time()
 
 
+def _today_watch_seconds() -> float:
+    hist = st.session_state.get("watch_history", [])
+    if not isinstance(hist, list) or not hist:
+        return 0.0
+    today = datetime.now().date()
+    total = 0.0
+    for ev in hist:
+        try:
+            ts = datetime.fromisoformat(str(ev.get("ts", "")).strip())
+            if ts.date() == today:
+                total += float(ev.get("dwell_sec", 0.0) or 0.0)
+        except Exception:
+            continue
+    return total
+
+
+def _watch_streak_count(max_gap_min: int = 30, min_dwell_sec: float = 10.0) -> int:
+    hist = st.session_state.get("watch_history", [])
+    if not isinstance(hist, list) or not hist:
+        return 0
+    rows = []
+    for ev in hist:
+        try:
+            ts = datetime.fromisoformat(str(ev.get("ts", "")).strip())
+            dwell = float(ev.get("dwell_sec", 0.0) or 0.0)
+            rows.append((ts, dwell))
+        except Exception:
+            continue
+    if not rows:
+        return 0
+    rows.sort(key=lambda x: x[0], reverse=True)
+    streak = 0
+    prev_ts: Optional[datetime] = None
+    for ts, dwell in rows:
+        if dwell < min_dwell_sec:
+            break
+        if prev_ts is not None:
+            gap = (prev_ts - ts).total_seconds() / 60.0
+            if gap > max_gap_min:
+                break
+        streak += 1
+        prev_ts = ts
+    return streak
+
+
 def open_item(url: str) -> None:
     prev_url = (st.session_state.get("selected_url") or "").strip()
     if prev_url and prev_url != (url or "").strip():
@@ -1180,6 +1267,38 @@ def open_item(url: str) -> None:
     st.session_state["item_opened_at"] = time.time()
     st.session_state["open_dialog"] = True
     st.rerun()
+
+
+def mark_not_interested(url: str, title: str = "") -> None:
+    u = (url or "").strip()
+    if not u:
+        return
+    hidden = st.session_state.get("hidden_urls", [])
+    if not isinstance(hidden, list):
+        hidden = []
+    if u not in hidden:
+        hidden.append(u)
+        st.session_state["hidden_urls"] = hidden
+    recent = st.session_state.get("hidden_recent", [])
+    if not isinstance(recent, list):
+        recent = []
+    recent.append({"url": u, "title": (title or u).strip(), "ts": datetime.now().isoformat(timespec="seconds")})
+    st.session_state["hidden_recent"] = recent[-30:]
+
+
+def undo_not_interested() -> bool:
+    recent = st.session_state.get("hidden_recent", [])
+    if not isinstance(recent, list) or not recent:
+        return False
+    last = recent.pop()
+    st.session_state["hidden_recent"] = recent
+    u = str((last or {}).get("url", "")).strip()
+    hidden = st.session_state.get("hidden_urls", [])
+    if isinstance(hidden, list) and u in hidden:
+        hidden = [x for x in hidden if x != u]
+        st.session_state["hidden_urls"] = hidden
+        return True
+    return False
 
 
 def current_summary_language() -> str:
@@ -1310,26 +1429,43 @@ with tab_feed:
         format_func=lambda c: f"{FEED_CATEGORY_EMOJI.get(c, '🔥')} {c}",
         key="feed_category_selector",
     )
+    c_auto1, c_auto2, c_auto3 = st.columns([1.2, 1.2, 1.2])
+    with c_auto1:
+        st.toggle("Autoplay next", key="autoplay_next", help="상세 모달에서 닫기를 누르면 다음 추천으로 자동 이동합니다.")
+    with c_auto2:
+        delay_opt = st.selectbox("Autoplay delay", options=[3, 5, 8], index=[3, 5, 8].index(int(st.session_state.get("autoplay_delay_sec", 3))), key="autoplay_delay_selector")
+        st.session_state["autoplay_delay_sec"] = int(delay_opt)
+    with c_auto3:
+        if st.button("Undo not interested", key="undo_not_interested_btn"):
+            if undo_not_interested():
+                st.rerun()
     if feed_cat != st.session_state.get("feed_category"):
         st.session_state["feed_category"] = feed_cat
         try:
             st.session_state["df_raw"] = load_youtube_df(selected_category=feed_cat)
+            _save_youtube_snapshot(st.session_state["df_raw"])
             st.session_state["data_source"] = "youtube"
             st.session_state["youtube_error"] = ""
             refresh_scores()
         except Exception as e:
-            st.session_state["youtube_error"] = str(e)
-            st.session_state["df_raw"] = load_demo_df()
-            st.session_state["data_source"] = "demo"
-            refresh_scores()
+            snap = _load_youtube_snapshot()
+            if not snap.empty:
+                st.session_state["df_raw"] = snap
+                st.session_state["data_source"] = "youtube_snapshot"
+                st.session_state["youtube_error"] = f"{e} (fallback: last successful snapshot)"
+                refresh_scores()
+            else:
+                st.session_state["youtube_error"] = str(e)
         st.rerun()
 
-    if st.session_state.get("data_source") == "demo":
-        yt_err = str(st.session_state.get("youtube_error", "") or "")
+    yt_err = str(st.session_state.get("youtube_error", "") or "")
+    if yt_err:
         if "YOUTUBE_API_KEY" in yt_err:
-            st.info("YouTube API key가 없어 데모 피드로 표시 중입니다. 운영자에게 YOUTUBE_API_KEY 설정을 요청하세요.")
+            st.warning("YouTube API key가 없어 실데이터를 불러오지 못했습니다. 운영자에게 YOUTUBE_API_KEY 설정을 요청하세요.")
+        elif "10061" in yt_err or "Connection refused" in yt_err or "연결을 거부" in yt_err:
+            st.warning("YouTube API 연결이 차단되었습니다(네트워크/방화벽/프록시). 연결 허용 후 자동으로 실데이터로 복귀합니다.")
         else:
-            st.info("현재 데모 데이터로 실행 중입니다.")
+            st.warning(f"YouTube 실데이터 로드 실패: {yt_err}")
 
     if df_scored.empty:
         st.warning("데이터가 없습니다. (운영자 모드 → 데이터 탭에서 넣을 수 있어요)")
@@ -1349,6 +1485,19 @@ with tab_feed:
     st.session_state["interest_cats"] = interest_cats
 
     watch_hist = st.session_state.get("watch_history", [])
+    today_sec = _today_watch_seconds()
+    streak_n = _watch_streak_count()
+    s1, s2, s3 = st.columns([1, 1, 1])
+    with s1:
+        st.caption(f"Today watched: {int(today_sec // 60)}m {int(today_sec % 60)}s")
+    with s2:
+        st.caption(f"Watch streak: {streak_n}")
+    with s3:
+        if st.button("Clear history", key="clear_watch_history_btn"):
+            st.session_state["watch_history"] = []
+            st.session_state["watch_dwell_by_url"] = {}
+            st.session_state["watch_dwell_by_cat"] = {}
+            st.rerun()
     if isinstance(watch_hist, list) and watch_hist:
         recent = pd.DataFrame(watch_hist)
         if not recent.empty and "url" in recent.columns:
@@ -1359,41 +1508,52 @@ with tab_feed:
                 with cols_cw[(i - 1) % 5]:
                     u = str(rec.get("url", "") or "").strip()
                     t0 = str(rec.get("title", "") or u).strip()
+                    ch0 = str(rec.get("channel_title", "") or "").strip()
+                    th0 = str(rec.get("thumbnail_url", "") or "").strip()
                     d0 = float(rec.get("dwell_sec", 0) or 0)
+                    if th0:
+                        st.image(th0, use_container_width=True)
                     lbl = f"{t0[:26]}{'...' if len(t0) > 26 else ''}\n{int(d0)}s watched"
+                    if ch0:
+                        st.caption(ch0[:28] + ("..." if len(ch0) > 28 else ""))
                     if st.button(lbl, key=f"cw_{i}_{abs(hash(u)) % 100000}"):
                         open_item(u)
 
     # Filter base
-    df_view = df_scored.copy()
-    if interest_cats:
-        df_view = df_view[df_view["category"].isin(interest_cats)]
+    df_overall = df_scored.copy()
+    hidden_urls = set(st.session_state.get("hidden_urls", []) or [])
+    if hidden_urls:
+        df_overall = df_overall[~df_overall["url"].isin(list(hidden_urls))]
 
     if search_q:
         mask = (
-            df_view["title"].astype(str).str.lower().str.contains(search_q, na=False)
-            | df_view["url"].astype(str).str.lower().str.contains(search_q, na=False)
-            | df_view["content"].astype(str).str.lower().str.contains(search_q, na=False)
+            df_overall["title"].astype(str).str.lower().str.contains(search_q, na=False)
+            | df_overall["url"].astype(str).str.lower().str.contains(search_q, na=False)
+            | df_overall["content"].astype(str).str.lower().str.contains(search_q, na=False)
         )
-        df_view = df_view[mask]
+        df_overall = df_overall[mask]
 
-    df_view["cat_pref_boost"] = _category_click_boost(df_view)
-    df_view["watch_boost"] = _watch_dwell_boost(df_view)
+    df_overall["cat_pref_boost"] = _category_click_boost(df_overall)
+    df_overall["watch_boost"] = _watch_dwell_boost(df_overall)
     feed_base_w = float(st.session_state.get("personal_base_w", 0.9) or 0.9)
     feed_cat_w = float(st.session_state.get("personal_cat_w", 0.1) or 0.1)
     feed_watch_w = max(0.0, 1.0 - (feed_base_w + feed_cat_w))
-    df_view["personal_score"] = (
-        pd.to_numeric(df_view.get("portal_score", 0), errors="coerce").fillna(0.0) * feed_base_w
-        + df_view["cat_pref_boost"] * feed_cat_w
-        + df_view["watch_boost"] * feed_watch_w
+    df_overall["personal_score"] = (
+        pd.to_numeric(df_overall.get("portal_score", 0), errors="coerce").fillna(0.0) * feed_base_w
+        + df_overall["cat_pref_boost"] * feed_cat_w
+        + df_overall["watch_boost"] * feed_watch_w
     )
-    df_view = df_view.sort_values(["personal_score", "portal_score", "engagement_score", "visits"], ascending=False)
+    df_overall = df_overall.sort_values(["personal_score", "portal_score", "engagement_score", "visits"], ascending=False)
+
+    df_view = df_overall.copy()
+    if interest_cats:
+        df_view = df_view[df_view["category"].isin(interest_cats)]
 
     main_col, side_col = st.columns([2.25, 1], gap="large")
 
     # ---- Ads (native sponsored cards) ----
     ads_inv = load_ads(APP_DIR)
-    ctx_keywords = compute_trending_keywords(df_view.head(50), top_k=12)
+    ctx_keywords = compute_trending_keywords(df_overall.head(50), top_k=12)
     ctx_categories = interest_cats or categories[:3]
 
     def _log_impression_once(ad_id: str, placement: str, content_url: str = "", content_category: str = "") -> None:
@@ -1503,7 +1663,7 @@ with tab_feed:
 
     with main_col:
         st.subheader(t("realtime_best"))
-        best = df_view.head(6).to_dict(orient="records")
+        best = df_overall.head(6).to_dict(orient="records")
 
         if not best:
             st.caption("조건에 맞는 콘텐츠가 없어요. 관심 카테고리를 늘리거나 검색을 지워보세요.")
@@ -1681,7 +1841,7 @@ with tab_feed:
             st.divider()
 
         st.subheader(t("hot"))
-        hot = df_view.head(10).to_dict(orient="records")
+        hot = df_overall.head(10).to_dict(orient="records")
         for i, row in enumerate(hot, start=1):
             source_title = (row.get("title") or "").strip() or row.get("url")
             url = row.get("url", "")
@@ -1693,7 +1853,7 @@ with tab_feed:
 
         st.divider()
         st.subheader(t("keywords"))
-        kw = compute_trending_keywords(df_view.head(50), top_k=12)
+        kw = compute_trending_keywords(df_overall.head(50), top_k=12)
         if kw:
             # show as chips
             chips = st.container()
@@ -1721,6 +1881,7 @@ with tab_feed:
         if not selected_url:
             st.write("선택된 항목이 없습니다.")
             return
+        st.session_state["_dlg_next_url"] = ""
 
         row = get_row_by_url(selected_url) or {"url": selected_url, "title": selected_url, "category": "전체"}
         source_title = (row.get("title") or "").strip() or selected_url
@@ -1826,6 +1987,9 @@ with tab_feed:
                 ["reco_rank", "portal_score", "engagement_score", "visits"],
                 ascending=False,
             )
+            hidden_urls = set(st.session_state.get("hidden_urls", []) or [])
+            if hidden_urls:
+                rec_base = rec_base[~rec_base["url"].isin(list(hidden_urls))]
             rec_base = rec_base[rec_base["url"] != selected_url].drop_duplicates(subset=["url"], keep="first")
 
             same_cat = rec_base[rec_base["category"] == cat]
@@ -1837,7 +2001,15 @@ with tab_feed:
                 for i, rec in enumerate(people_df.to_dict(orient="records"), start=1):
                     rec_url = rec.get("url", "")
                     rec_title = (rec.get("title") or rec_url).strip()
-                    if st.button(f"{i}. {rec_title}", key=f"also_{selected_url}_{i}"):
+                    c_also_1, c_also_2 = st.columns([5, 2])
+                    with c_also_1:
+                        clicked_open = st.button(f"{i}. {rec_title}", key=f"also_{selected_url}_{i}")
+                    with c_also_2:
+                        clicked_hide = st.button("Not interested", key=f"ni_also_{selected_url}_{i}")
+                    if clicked_hide and rec_url:
+                        mark_not_interested(rec_url, rec_title)
+                        st.rerun()
+                    if clicked_open:
                         rec_cat = str(rec.get("category", "") or "").strip()
                         ccounts = st.session_state.get("clicked_category_counts", {})
                         if not isinstance(ccounts, dict):
@@ -1872,6 +2044,7 @@ with tab_feed:
                 next_first = next_df.iloc[0].to_dict()
                 next_first_url = str(next_first.get("url", "") or "").strip()
                 next_first_title = str(next_first.get("title", "") or next_first_url).strip()
+                st.session_state["_dlg_next_url"] = next_first_url
                 if next_first_url:
                     if st.button(f"▶ Play next: {next_first_title[:42]}", key=f"play_next_{selected_url}", type="primary"):
                         rec_cat = str(next_first.get("category", "") or "").strip()
@@ -1887,7 +2060,15 @@ with tab_feed:
                 for i, rec in enumerate(next_df.to_dict(orient="records"), start=1):
                     rec_url = rec.get("url", "")
                     rec_title = (rec.get("title") or rec_url).strip()
-                    if st.button(f"{i}. {rec_title}", key=f"next_{selected_url}_{i}"):
+                    c_next_1, c_next_2 = st.columns([5, 2])
+                    with c_next_1:
+                        clicked_open = st.button(f"{i}. {rec_title}", key=f"next_{selected_url}_{i}")
+                    with c_next_2:
+                        clicked_hide = st.button("Not interested", key=f"ni_next_{selected_url}_{i}")
+                    if clicked_hide and rec_url:
+                        mark_not_interested(rec_url, rec_title)
+                        st.rerun()
+                    if clicked_open:
                         rec_cat = str(rec.get("category", "") or "").strip()
                         ccounts = st.session_state.get("clicked_category_counts", {})
                         if not isinstance(ccounts, dict):
@@ -2028,9 +2209,17 @@ with tab_feed:
                 st.markdown(f"[Open source]({selected_url})")
             with a4:
                 if st.button("Close", key=f"dlg_close::{cache_key}"):
-                    _finalize_current_view("close")
-                    st.session_state["open_dialog"] = False
-                    st.rerun()
+                    next_url = str(st.session_state.get("_dlg_next_url", "") or "").strip()
+                    if st.session_state.get("autoplay_next", True) and next_url and next_url != selected_url:
+                        delay_sec = int(st.session_state.get("autoplay_delay_sec", 3) or 3)
+                        st.info(f"Playing next in {delay_sec} seconds...")
+                        time.sleep(delay_sec)
+                        _finalize_current_view("autoplay_close")
+                        open_item(next_url)
+                    else:
+                        _finalize_current_view("close")
+                        st.session_state["open_dialog"] = False
+                        st.rerun()
 
             st.divider()
             st.markdown("### ✍️ 이 글로 새 콘텐츠 만들기")

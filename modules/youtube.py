@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 
 
 SEARCH_ENDPOINT = "https://www.googleapis.com/youtube/v3/search"
@@ -22,7 +22,9 @@ def _to_int(v, default: int = 0) -> int:
 
 def _request_json(url: str, params: Dict[str, str]) -> Dict:
     q = urlencode(params)
-    with urlopen(f"{url}?{q}", timeout=20) as r:  # nosec B310
+    # Bypass machine-level proxy overrides (e.g. localhost:9) for direct YouTube API access.
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(f"{url}?{q}", timeout=20) as r:  # nosec B310
         return json.loads(r.read().decode("utf-8"))
 
 
