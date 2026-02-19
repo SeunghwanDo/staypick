@@ -1634,17 +1634,28 @@ st.caption(t("header_caption"))
 # ---------------------------
 # Tabs (general users first)
 # ---------------------------
-tab_names = [t("tab_feed"), t("tab_make")]
+tab_names = [t("tab_feed"), "활용법", t("tab_make")]
 if admin_mode:
     tab_names += [t("tab_data"), t("tab_insights"), t("tab_sponsor"), t("tab_global")]
 tabs = st.tabs(tab_names)
 
-tab_feed = tabs[0]
-tab_make = tabs[1]
-tab_data = tabs[2] if admin_mode else None
-tab_insights = tabs[3] if admin_mode else None
-tab_sponsor = tabs[4] if admin_mode else None
-tab_global = tabs[5] if admin_mode else None
+_ti = 0
+tab_feed = tabs[_ti]
+_ti += 1
+tab_guide = tabs[_ti]
+_ti += 1
+tab_make = tabs[_ti]
+_ti += 1
+tab_data = tabs[_ti] if admin_mode else None
+if admin_mode:
+    _ti += 1
+tab_insights = tabs[_ti] if admin_mode else None
+if admin_mode:
+    _ti += 1
+tab_sponsor = tabs[_ti] if admin_mode else None
+if admin_mode:
+    _ti += 1
+tab_global = tabs[_ti] if admin_mode else None
 
 
 # ---------------------------
@@ -2629,6 +2640,64 @@ with tab_feed:
 
     if st.session_state.get("open_dialog"):
         item_dialog()
+
+
+# ---------------------------
+# Guide tab
+# ---------------------------
+with tab_guide:
+    st.subheader("🚀 StayPick 활용법")
+    st.caption("유튜브처럼 계속 보게 만들고, 바로 내 콘텐츠로 전환하는 가장 빠른 루트")
+
+    st.markdown("### 1) 10초 온보딩")
+    st.markdown(
+        """
+- 상단 카테고리 박스를 눌러 관심 주제를 고릅니다.
+- `Shorts`에서 가볍게 훑고, `Longform`에서 깊게 봅니다.
+- 오른쪽 `HOT 랭킹`과 `인기검색`으로 지금 뜨는 흐름을 빠르게 잡습니다.
+"""
+    )
+
+    st.markdown("### 2) 도파민 루프(계속 클릭하게 만드는 루틴)")
+    st.markdown(
+        """
+- 먼저 `Shorts` 3개만 연속 시청해서 감을 잡습니다.
+- 마음에 드는 1개를 눌러 상세 모달로 들어갑니다.
+- 모달의 `사람들이 같이 본 글`과 `다음 추천`을 타고 3~5개 연속 이동합니다.
+- 좋아 보이는 건 `저장`해서 만들기 탭으로 넘깁니다.
+"""
+    )
+
+    st.markdown("### 3) 상세 모달 100% 활용")
+    st.markdown(
+        """
+- `3초 요약`으로 핵심 파악
+- `핵심 3개`로 메시지 추출
+- `왜 뜨는가`로 조회/체류/반응 근거 확인
+- `논쟁 포인트`로 댓글/커뮤니티 반응 포인트 확보
+"""
+    )
+
+    st.markdown("### 4) 바로 재가공(만들기 탭)")
+    st.markdown(
+        """
+- 피드에서 저장한 항목을 묶어 한 번에 새 글/스크립트 생성
+- 독자 타입(입문자/직장인/마케터)과 출력 포맷을 바꿔 여러 버전 실험
+- 방금 만든 결과를 다시 피드 아이템과 연결해 반복 개선
+"""
+    )
+
+    st.markdown("### 5) 해커톤 데모용 3분 시나리오")
+    st.markdown(
+        """
+1. 카테고리 1개 선택 후 Shorts 2개 시청
+2. Longform TOP1 클릭 → 요약 확인
+3. 저장 후 만들기 탭에서 결과 생성
+4. 생성 결과를 즉시 공유(복사/다운로드)
+"""
+    )
+
+    st.info("팁: 검색창에 키워드 1개만 넣어도 피드가 즉시 재정렬됩니다. `짧게 훑기 → 깊게 보기 → 바로 만들기` 순서가 가장 전환율이 높습니다.")
 
 
 # ---------------------------
