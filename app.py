@@ -138,6 +138,106 @@ section[data-testid="stSidebar"] > div {
 div.stButton > button {
   border-radius: 12px;
 }
+
+/* YouTube-like cards */
+.yt-card {
+  border: 1px solid rgba(49, 51, 63, 0.10);
+  border-radius: 16px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(20, 20, 40, 0.06);
+}
+.yt-thumb-wrap {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #e9eef5;
+  position: relative;
+  overflow: hidden;
+}
+.yt-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 180ms ease;
+}
+.yt-card:hover .yt-thumb-img { transform: scale(1.04); }
+.yt-thumb-wrap::after {
+  content: "▶";
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.58);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.yt-body {
+  padding: 10px 12px 12px;
+}
+.yt-title {
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.3;
+  color: #15161b;
+  margin: 0;
+}
+.yt-meta {
+  font-size: 12px;
+  color: rgba(49, 51, 63, 0.72);
+  margin-top: 6px;
+}
+.yt-sub {
+  font-size: 12px;
+  color: rgba(49, 51, 63, 0.86);
+  margin-top: 8px;
+}
+.yt-topline {
+  display:flex;
+  align-items:center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* Shorts rail */
+.short-card {
+  border: 1px solid rgba(49, 51, 63, 0.10);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+.short-thumb-wrap {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  background: #e9eef5;
+  overflow: hidden;
+}
+.short-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 180ms ease;
+}
+.short-card:hover .short-thumb-img { transform: scale(1.04); }
+.short-body { padding: 8px 9px 10px; }
+.short-title {
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  margin: 0;
+}
+
+/* Mobile: stack columns to 1 */
+@media (max-width: 900px) {
+  div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
+  div[data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; }
+}
 </style>
 """
 st.markdown(PORTAL_CSS, unsafe_allow_html=True)
@@ -324,7 +424,7 @@ with st.sidebar:
             "ja": "日本語",
             "es": "Español",
         }.get(x, x),
-        index=["auto", "ko", "en", "ja", "es"].index(st.session_state.get("ui_lang_choice", "auto")),
+        index=["auto", "ko", "en", "ja", "es"].index(st.session_state.get("ui_lang_choice", "ko")),
         key="ui_lang_choice",
     )
 
@@ -600,6 +700,7 @@ with st.sidebar:
             st.markdown("#### YouTube source")
             st.session_state["yt_region"] = st.text_input("YT region", value=st.session_state.get("yt_region", "KR")).upper()
             st.session_state["yt_lang"] = st.text_input("YT language", value=st.session_state.get("yt_lang", "ko"))
+            st.session_state["yt_kr_ratio"] = st.slider("KR mix ratio", min_value=0.5, max_value=0.9, value=float(st.session_state.get("yt_kr_ratio", 0.7)), step=0.05)
             st.session_state["yt_cache_ttl_min"] = st.slider("YT cache TTL (min)", min_value=10, max_value=30, value=int(st.session_state.get("yt_cache_ttl_min", 15)))
             st.session_state["yt_max_per_query"] = st.slider("YT max/query", min_value=3, max_value=20, value=int(st.session_state.get("yt_max_per_query", 8)))
             raw_groups = json.dumps(st.session_state.get("yt_query_groups", DEFAULT_YT_QUERY_GROUPS), ensure_ascii=False, indent=2)
@@ -693,39 +794,71 @@ def load_youtube_df(selected_category: Optional[str] = None) -> pd.DataFrame:
         active_groups = {selected_category: groups.get(selected_category, [])}
     else:
         active_groups = groups
+    # Default sourcing mix: KR 70% + overseas 30% (US)
+    kr_ratio = float(st.session_state.get("yt_kr_ratio", 0.7) or 0.7)
+    kr_ratio = min(max(kr_ratio, 0.5), 0.9)
     for cat, queries in active_groups.items():
         for q in queries[:1]:
-            items = _cached_youtube_query(
-                query=q,
-                region=region,
-                lang=lang,
-                max_results=max_per_query,
-                published_days=published_days,
-                category=cat,
-                cache_bucket=cache_bucket,
-            )
-            for it in items:
-                rows.append(
-                    {
-                        "url": it.get("url", ""),
-                        "video_id": it.get("video_id", ""),
-                        "title": it.get("title", ""),
-                        "visits": float(it.get("views", 0) or 0),
-                        "avg_dwell_sec": float(it.get("avg_dwell_sec", 60) or 60),
-                        "content": it.get("description", "") or "",
-                        "description": it.get("description", "") or "",
-                        "category": it.get("category", cat),
-                        "thumbnail_url": it.get("thumbnail_url", ""),
-                        "channel_title": it.get("channel_title", ""),
-                        "published_at": it.get("published_at", ""),
-                        "like_count": float(it.get("like_count", 0) or 0),
-                        "comment_count": float(it.get("comment_count", 0) or 0),
-                    }
+            kr_n = max(1, int(round(max_per_query * kr_ratio)))
+            gl_n = max(1, max_per_query - kr_n)
+            fetch_plan = [
+                ("KR", "ko", kr_n),
+                (region if region != "KR" else "US", (lang if lang != "ko" else "en"), gl_n),
+            ]
+            for rg, lg, take_n in fetch_plan:
+                items = _cached_youtube_query(
+                    query=q,
+                    region=rg,
+                    lang=lg,
+                    max_results=take_n,
+                    published_days=published_days,
+                    category=cat,
+                    cache_bucket=cache_bucket,
                 )
+                for it in items:
+                    views_v = float(it.get("views", 0) or 0)
+                    rows.append(
+                        {
+                            "url": it.get("url", ""),
+                            "video_id": it.get("video_id", ""),
+                            "title": it.get("title", ""),
+                            "visits": views_v,
+                            "kr_views": views_v if str(rg).upper() == "KR" else 0.0,
+                            "avg_dwell_sec": float(it.get("avg_dwell_sec", 60) or 60),
+                            "content": it.get("description", "") or "",
+                            "description": it.get("description", "") or "",
+                            "category": it.get("category", cat),
+                            "thumbnail_url": it.get("thumbnail_url", ""),
+                            "channel_title": it.get("channel_title", ""),
+                            "published_at": it.get("published_at", ""),
+                            "like_count": float(it.get("like_count", 0) or 0),
+                            "comment_count": float(it.get("comment_count", 0) or 0),
+                        }
+                    )
 
     if not rows:
         return pd.DataFrame(columns=["url", "title", "visits", "avg_dwell_sec", "content", "category"])
     df = pd.DataFrame(rows)
+    # Merge duplicated urls from KR/global pulls while preserving KR view signal.
+    df = (
+        df.sort_values(["kr_views", "visits"], ascending=False)
+        .groupby("url", as_index=False, dropna=False)
+        .agg(
+            video_id=("video_id", "first"),
+            title=("title", "first"),
+            visits=("visits", "max"),
+            kr_views=("kr_views", "sum"),
+            avg_dwell_sec=("avg_dwell_sec", "max"),
+            content=("content", "first"),
+            description=("description", "first"),
+            category=("category", "first"),
+            thumbnail_url=("thumbnail_url", "first"),
+            channel_title=("channel_title", "first"),
+            published_at=("published_at", "first"),
+            like_count=("like_count", "max"),
+            comment_count=("comment_count", "max"),
+        )
+    )
     hours = df.get("published_at", pd.Series(dtype=str)).apply(_hours_since_published)
     recency = hours.apply(lambda h: 1.0 / (1.0 + (h / 36.0)) if h is not None else 0.25)
     reaction = (
@@ -899,12 +1032,21 @@ def _views_text(v: Any) -> str:
     return f"{int(n)} views"
 
 
+def _is_shorts_item(row: Dict[str, Any]) -> bool:
+    t = str(row.get("title", "") or "").lower()
+    u = str(row.get("url", "") or "").lower()
+    return ("shorts" in t) or ("/shorts/" in u) or ("#shorts" in t)
+
+
 def refresh_scores() -> None:
     """Recompute df_scored/top tables when weights or dataset changes."""
     if "df_raw" not in st.session_state or st.session_state["df_raw"] is None:
         return
     df_raw: pd.DataFrame = st.session_state["df_raw"]
     df_scored = compute_engagement_score(df_raw, weight_visits=weight_visits, weight_dwell=weight_dwell)
+    if "kr_views" not in df_scored.columns:
+        df_scored["kr_views"] = 0.0
+    df_scored["kr_views"] = pd.to_numeric(df_scored.get("kr_views", 0), errors="coerce").fillna(0.0)
     df_scored["portal_score"] = _compute_portal_score(df_scored)
     st.session_state["df_scored"] = df_scored
     st.session_state["top_df"] = top_by_score(df_scored, top_n=top_n)
@@ -976,6 +1118,7 @@ def init_state() -> None:
     st.session_state.setdefault("interest_cats", [])
     st.session_state.setdefault("yt_region", "KR")
     st.session_state.setdefault("yt_lang", "ko")
+    st.session_state.setdefault("yt_kr_ratio", 0.7)
     st.session_state.setdefault("yt_published_days", 7)
     st.session_state.setdefault("yt_cache_ttl_min", 15)
     st.session_state.setdefault("yt_max_per_query", 8)
@@ -1483,6 +1626,8 @@ with tab_feed:
 
     interest_cats = [st.session_state.get("feed_category", feed_cat)]
     st.session_state["interest_cats"] = interest_cats
+    st.session_state.setdefault("shorts_show_n", 10)
+    st.session_state.setdefault("long_show_n", 9)
 
     watch_hist = st.session_state.get("watch_history", [])
     today_sec = _today_watch_seconds()
@@ -1543,7 +1688,8 @@ with tab_feed:
         + df_overall["cat_pref_boost"] * feed_cat_w
         + df_overall["watch_boost"] * feed_watch_w
     )
-    df_overall = df_overall.sort_values(["personal_score", "portal_score", "engagement_score", "visits"], ascending=False)
+    df_overall["kr_views"] = pd.to_numeric(df_overall.get("kr_views", 0), errors="coerce").fillna(0.0)
+    df_overall = df_overall.sort_values(["kr_views", "personal_score", "portal_score", "engagement_score", "visits"], ascending=False)
 
     df_view = df_overall.copy()
     if interest_cats:
@@ -1662,8 +1808,50 @@ with tab_feed:
             st.caption("※ 스폰서/광고")
 
     with main_col:
+        shorts_items = [r for r in df_overall.head(80).to_dict(orient="records") if _is_shorts_item(r)]
+        if shorts_items:
+            st.subheader("Shorts")
+            short_show = int(st.session_state.get("shorts_show_n", 10) or 10)
+            short_cols = st.columns(5, gap="small")
+            for i, row in enumerate(shorts_items[:short_show], start=1):
+                with short_cols[(i - 1) % 5]:
+                    s_url = str(row.get("url", "") or "").strip()
+                    s_title = str(row.get("title", "") or s_url).strip()
+                    s_thumb = str(row.get("thumbnail_url", "") or "").strip()
+                    s_meta = " · ".join(
+                        [
+                            str(row.get("channel_title", "") or "").strip(),
+                            _views_text(row.get("visits", 0)),
+                        ]
+                    ).strip(" ·")
+                    thumb_html = (
+                        f"<img class='short-thumb-img' src='{html.escape(s_thumb)}' alt='short thumbnail'/>"
+                        if s_thumb
+                        else "<div class='short-thumb-wrap'></div>"
+                    )
+                    st.markdown(
+                        f"""
+<div class="short-card">
+  <div class="short-thumb-wrap">{thumb_html}</div>
+  <div class="short-body">
+    <p class="short-title">{html.escape(s_title[:42] + ('...' if len(s_title) > 42 else ''))}</p>
+    <div class="yt-meta">{html.escape(s_meta)}</div>
+  </div>
+</div>
+""",
+                        unsafe_allow_html=True,
+                    )
+                    if st.button("Play", key=f"short_open_{abs(hash(s_url)) % 100000}_{i}"):
+                        open_item(s_url)
+            if len(shorts_items) > short_show:
+                if st.button("Shorts 더보기", key="btn_more_shorts"):
+                    st.session_state["shorts_show_n"] = short_show + 10
+                    st.rerun()
+
         st.subheader(t("realtime_best"))
-        best = df_overall.head(6).to_dict(orient="records")
+        long_items = [r for r in df_overall.to_dict(orient="records") if not _is_shorts_item(r)]
+        long_show = int(st.session_state.get("long_show_n", 9) or 9)
+        best = long_items[:long_show]
 
         if not best:
             st.caption("조건에 맞는 콘텐츠가 없어요. 관심 카테고리를 늘리거나 검색을 지워보세요.")
@@ -1699,23 +1887,25 @@ with tab_feed:
                         ]
                     ).strip(" ·")
                     chips_html = chips_to_html([f"{emoji} {cat}", "🔥 실시간"], max_items=2)
+                    thumb_block = (
+                        f"<img class='yt-thumb-img' src='{html.escape(thumb_url)}' alt='thumbnail'/>"
+                        if thumb_url
+                        else f"<div class='sp-thumb' style='{thumb_style}; width:100%; height:100%; border-radius:0;'>{thumb_text}</div>"
+                    )
 
                     st.markdown(
                         f"""
-<div class="sp-card">
-  <div class="sp-row">
-    <div class="sp-thumb" style="{thumb_style}">{thumb_text}</div>
-    <div class="sp-meta">
-      <div>
-        <span class="rank-badge">TOP {i}</span>
-        <span class="sp-kicker" style="margin-left:6px;">{html.escape(cat)}</span>
+<div class="yt-card">
+  <div class="yt-thumb-wrap">{thumb_block}</div>
+  <div class="yt-body">
+      <div class="yt-topline">
+        <span class="rank-badge">TOP {i}</span><span class="sp-kicker">{html.escape(cat)}</span>
       </div>
-      <div class="sp-kicker">{html.escape(yt_meta)}</div>
-      <div class="sp-title">{html.escape(display_title)}</div>
-      <div class="sp-snippet">{html.escape(teaser or '눌러서 3초 요약 보기')}</div>
+      <p class="yt-title">{html.escape(display_title)}</p>
+      <div class="yt-meta">{html.escape(yt_meta)}</div>
+      <div class="yt-sub">{html.escape(teaser or '눌러서 3초 요약 보기')}</div>
       <div class="sp-chips">{chips_html}</div>
     </div>
-  </div>
 </div>
 """,
                         unsafe_allow_html=True,
@@ -1732,6 +1922,10 @@ with tab_feed:
                         if s and st.button(t("btn_save"), key=f"best_save_{i}"):
                             add_to_selection(s)
                             st.toast("저장됨(선택 목록)")
+            if len(long_items) > long_show:
+                if st.button("롱폼 더보기", key="btn_more_long"):
+                    st.session_state["long_show_n"] = long_show + 9
+                    st.rerun()
 
         # ---- Sponsored banner (native ad) ----
         if show_ads:
@@ -1801,20 +1995,23 @@ with tab_feed:
                     ]
                 ).strip(" ·")
                 chips_html = chips_to_html([f"{emoji} {selected_cat}", f"TOP {rank}"], max_items=2)
+                thumb_block = (
+                    f"<img class='yt-thumb-img' src='{html.escape(thumb_url)}' alt='thumbnail'/>"
+                    if thumb_url
+                    else f"<div class='sp-thumb' style='{thumb_style}; width:100%; height:100%; border-radius:0;'>{thumb_text}</div>"
+                )
 
                 st.markdown(
                     f"""
-<div class="sp-card">
-  <div class="sp-row">
-    <div class="sp-thumb" style="{thumb_style}">{thumb_text}</div>
-    <div class="sp-meta">
-      <div class="sp-kicker">{rank}. {html.escape(selected_cat)}</div>
-      <div class="sp-kicker">{html.escape(yt_meta)}</div>
-      <div class="sp-title">{html.escape(display_title)}</div>
-      <div class="sp-snippet">{html.escape(teaser or '미리보기 없음 · 눌러서 3초 요약')}</div>
+<div class="yt-card">
+  <div class="yt-thumb-wrap">{thumb_block}</div>
+  <div class="yt-body">
+      <div class="yt-topline"><span class="rank-badge">TOP {rank}</span><span class="sp-kicker">{html.escape(selected_cat)}</span></div>
+      <p class="yt-title">{html.escape(display_title)}</p>
+      <div class="yt-meta">{html.escape(yt_meta)}</div>
+      <div class="yt-sub">{html.escape(teaser or '미리보기 없음 · 눌러서 3초 요약')}</div>
       <div class="sp-chips">{chips_html}</div>
     </div>
-  </div>
 </div>
 """,
                     unsafe_allow_html=True,
@@ -1848,7 +2045,16 @@ with tab_feed:
             cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
             s = get_cached_summary(cache, url)
             display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
-            if st.button(f"{i}. {display_title}", key=f"hot_{i}"):
+            meta = " · ".join(
+                [
+                    str(row.get("channel_title", "") or "").strip(),
+                    _views_text(row.get("visits", 0)),
+                ]
+            ).strip(" ·")
+            st.caption(f"{i}. {display_title}")
+            if meta:
+                st.caption(meta)
+            if st.button("보기", key=f"hot_{i}"):
                 open_item(url)
 
         st.divider()
@@ -1904,9 +2110,13 @@ with tab_feed:
             st.caption(f"source title: {source_title}")
 
         content_from_csv = (row.get("content", "") or "").strip()
+        content_desc = (row.get("description", "") or "").strip()
         if content_from_csv:
             with st.expander("원문 일부 보기", expanded=False):
                 st.write(content_from_csv[:2500] + ("…" if len(content_from_csv) > 2500 else ""))
+        elif content_desc:
+            with st.expander("원문 일부 보기", expanded=False):
+                st.write(content_desc[:2500] + ("…" if len(content_desc) > 2500 else ""))
         else:
             st.caption("원문이 CSV에 없어요. 요약 생성 시 URL에서 가져옵니다.")
 
@@ -2111,11 +2321,13 @@ with tab_feed:
             # Prefer CSV content; otherwise fetch. If fetch fails, fall back to title/snippet.
             with st.spinner("원문 준비 중..."):
                 page_title = source_title or selected_url
-                text = content_from_csv
+                text = content_from_csv or content_desc
                 if not text:
                     try:
-                        # Skip fetch for non-http URLs
-                        if re.match(r"^https?://", selected_url, flags=re.I):
+                        # Skip fetch for non-http URLs and YouTube watch pages (use description/title fallback).
+                        is_http = bool(re.match(r"^https?://", selected_url, flags=re.I))
+                        is_yt = ("youtube.com/watch" in selected_url.lower()) or ("youtu.be/" in selected_url.lower())
+                        if is_http and (not is_yt):
                             fetched_title, fetched_text = cached_fetch(selected_url)
                             page_title = (fetched_title or page_title).strip()
                             text = (fetched_text or "").strip()
