@@ -357,35 +357,11 @@ with st.sidebar:
         st.session_state["content_lang"] = content_lang
 
         with st.expander(t("exp_make_advanced"), expanded=False):
-            persona = st.selectbox(
-                t("persona"),
-                options=[
-                    "일반 유저(입문자)",
-                    "직장인(가볍게 읽기)",
-                    "스타트업 마케터",
-                    "PM/PO",
-                    "개발자/데이터",
-                ],
-                index=0,
-                key="persona_main",
-            )
-            output_format = st.selectbox(
-                t("output_format"),
-                options=[
-                    "친구에게 보내는 추천글(짧게)",
-                    "3줄 요약(초간단)",
-                    "블로그 포스트(1200~1600자)",
-                    "X(트위터) 스레드(8~10개)",
-                    "숏폼 영상 대본(60초)",
-                ],
-                index=0,
-            )
             brand_tone = st.text_area(
                 t("tone"),
                 placeholder="예: 훅은 세게, 밈은 과하지 않게, 마지막에 한줄 결론",
                 height=90,
             )
-
     # Defaults when advanced expander is collapsed (keeps app stable)
     persona = locals().get("persona", "일반 유저(입문자)")
     output_format = locals().get("output_format", "친구에게 보내는 추천글(짧게)")
@@ -1162,6 +1138,7 @@ with tab_feed:
                     "30s": t("age_30s"),
                 }.get(x, x),
                 index=["general", "elem", "mid", "high", "uni", "20s", "30s"].index(st.session_state.get("age_group", "general")),
+                key="age_group_local",
             )
 
             persona_local = st.selectbox(
@@ -1267,6 +1244,7 @@ with tab_make:
                 "30s": t("age_30s"),
             }.get(x, x),
             index=["general", "elem", "mid", "high", "uni", "20s", "30s"].index(st.session_state.get("age_group", "general")),
+            key="age_group_make",
         )
 
         persona2 = st.selectbox("독자 타입", options=[
