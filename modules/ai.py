@@ -32,6 +32,42 @@ def _truncate(text: str, max_chars: int = 12000) -> str:
     return text[: max_chars - 200] + "\n\n...(truncated)...\n"
 
 
+def _ensure_three_key_points(items: Any) -> List[str]:
+    points = [str(x).strip() for x in (items or []) if str(x).strip()]
+    return points[:3]
+
+
+def _polish_hook(hook: str, fallback: str = "") -> str:
+    text = (hook or "").strip() or (fallback or "").strip()
+    if not text:
+        return ""
+    text = text.replace("?", "").replace("？", "").strip()
+    if not text:
+        text = (fallback or "").strip()
+    if text and text[-1] not in ".!":
+        text += "."
+    return text
+
+
+def _why_section(metrics: Dict[str, Any]) -> str:
+    visits = float(metrics.get("visits", 0) or 0)
+    dwell = float(metrics.get("avg_dwell_sec", 0) or 0)
+    raw_score = metrics.get("engagement_score")
+    score = (
+        f"{float(raw_score):.3f}"
+        if raw_score is not None and str(raw_score).strip() != ""
+        else "데이터 없음"
+    )
+    return (
+        f"왜 뜨는가: 방문 {visits:.0f}회와 평균 체류 {dwell:.1f}초는 실제 소비가 일어난 신호입니다. "
+        f"참여도 점수 {score}를 보면 단순 노출을 넘어 관심이 유지된 주제로 해석됩니다."
+    )
+
+
+def _discussion_prompt() -> str:
+    return "조회수와 체류시간 중 어떤 지표가 더 신뢰할 만한가요?"
+
+
 def _lang_instruction(language: str) -> str:
     """Return a short 'write in X' instruction.
 
@@ -124,33 +160,30 @@ class OpenAIService:
         schema = {
             "type": "object",
             "properties": {
+                "url": {"type": "string", "minLength": 1},
                 "title": {"type": "string", "minLength": 1},
                 "localized_title": {"type": "string", "minLength": 1},
                 "hook": {"type": "string"},
                 "one_liner": {"type": "string"},
+                "key_points": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3},
+                "why_trending": {"type": "string"},
+                "discussion_prompt": {"type": "string"},
                 "summary": {"type": "string"},
-                "key_points": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 8},
-                "tags": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 10},
-                "audience": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 6},
-                "recommended_angles": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 2,
-                    "maxItems": 6,
-                },
-                "risk_notes": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 8},
+                "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 5},
             },
             "required": [
+                "url",
                 "title",
                 "localized_title",
                 "hook",
                 "one_liner",
-                "summary",
                 "key_points",
+                "why_trending",
+                "discussion_prompt",
+                "summary",
                 "tags",
-                "audience",
-                "recommended_angles",
-                "risk_notes",
+                "sources",
             ],
             "additionalProperties": False,
         }
@@ -158,6 +191,11 @@ class OpenAIService:
         system = (
             "You are a product/content strategist and editor. "
             "Summarize what people truly linger on, and propose angles for repurposing. "
+            "Avoid hallucinations; if uncertain, stay neutral and explicit about uncertainty. "
+            "Hook must be declarative (no question form), punchy, curiosity-driven, and factual. "
+            "Return at most 3 key_points. "
+            "why_trending must be 1-2 sentences grounded in visits, avg_dwell_sec, engagement_score. "
+            "discussion_prompt must be one short, safe sentence for minors. "
             + _age_profile(age_group)
             + " "
             + _age_guardrails(age_group)
@@ -205,15 +243,22 @@ class OpenAIService:
         resp = _call_with_backoff(_do)
         raw = resp.output_text
         data = json.loads(raw)
-        # Attach metadata (outside the model schema)
         data["url"] = url
-        data["metrics"] = metrics
-        data["age_group"] = age_group
         # Backward-compat: if localized_title missing, reuse title
         if not data.get("localized_title"):
             data["localized_title"] = data.get("title") or title
-        if not data.get("hook"):
-            data["hook"] = data.get("one_liner") or ""
+        data["key_points"] = _ensure_three_key_points(data.get("key_points"))
+        if not data["key_points"]:
+            data["key_points"] = [data.get("one_liner") or "핵심 포인트를 확인하세요."]
+        data["hook"] = _polish_hook(data.get("hook", ""), fallback=data.get("one_liner", ""))
+        why_text = _why_section(metrics)
+        data["why_trending"] = (data.get("why_trending") or "").strip() or why_text
+        data["discussion_prompt"] = (data.get("discussion_prompt") or "").strip() or _discussion_prompt()
+        data["summary"] = (data.get("summary") or "").strip() or data["why_trending"]
+        sources = [str(x).strip() for x in (data.get("sources") or []) if str(x).strip()]
+        if url not in sources:
+            sources.insert(0, url)
+        data["sources"] = sources[:5]
         return data
 
     def embed_texts(self, texts: Sequence[str]) -> List[List[float]]:

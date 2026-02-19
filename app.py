@@ -522,6 +522,39 @@ def open_item(url: str) -> None:
     st.rerun()
 
 
+def current_summary_language() -> str:
+    return normalize_lang(st.session_state.get("content_lang") or st.session_state.get("ui_lang", "ko"))
+
+
+def make_cache_key(url: str, lang: Optional[str], age: Optional[str]) -> str:
+    lang = normalize_lang(lang or current_summary_language())
+    age = (age or st.session_state.get("age_group", "general") or "general").strip()
+    return f"{(url or '').strip()}||{lang}||{age}"
+
+
+def get_cached_summary(
+    url: str,
+    language: Optional[str] = None,
+    age_group: Optional[str] = None,
+    cache: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    cache = cache if cache is not None else st.session_state.get("summary_cache", {})
+    key = make_cache_key(url, language, age_group)
+    return cache.get(key) or cache.get(url)
+
+
+def set_cached_summary(
+    url: str,
+    summary: Dict[str, Any],
+    language: Optional[str] = None,
+    age_group: Optional[str] = None,
+    cache: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> None:
+    cache = cache if cache is not None else st.session_state.get("summary_cache", {})
+    key = make_cache_key(url, language, age_group)
+    cache[key] = summary
+
+
 def add_to_selection(summary: Dict[str, Any]) -> None:
     selected: List[Dict[str, Any]] = st.session_state.get("selected_summaries", [])
     urls = {x.get("url") for x in selected}
@@ -761,7 +794,7 @@ with tab_feed:
                     cat = row.get("category", "전체")
                     content = (row.get("content") or "").strip()
                     cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-                    s = cache.get(url)
+                    s = get_cached_summary(url, cache=cache)
                     display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
                     if teaser_mode == "ai" and s:
                         teaser = (s.get("hook") or s.get("one_liner") or "")
@@ -849,7 +882,7 @@ with tab_feed:
                 url = row.get("url", "")
                 content = (row.get("content") or "").strip()
                 cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-                s = cache.get(url)
+                s = get_cached_summary(url, cache=cache)
                 display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
                 if teaser_mode == "ai" and s:
                     teaser = (s.get("hook") or s.get("one_liner") or "")
@@ -903,7 +936,7 @@ with tab_feed:
             source_title = (row.get("title") or "").strip() or row.get("url")
             url = row.get("url", "")
             cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-            s = cache.get(url)
+            s = get_cached_summary(url, cache=cache)
             display_title = (s.get("localized_title") or s.get("title") or source_title) if s else source_title
             if st.button(f"{i}. {display_title}", key=f"hot_{i}"):
                 open_item(url)
@@ -944,19 +977,20 @@ with tab_feed:
         cat = row.get("category", "전체")
 
         cache: Dict[str, Dict[str, Any]] = st.session_state.get("summary_cache", {})
-        existing = cache.get(selected_url)
+        current_lang = current_summary_language()
+        current_age = st.session_state.get("age_group", "general")
+        cache_key = make_cache_key(selected_url, current_lang, current_age)
+        existing = get_cached_summary(selected_url, language=current_lang, age_group=current_age, cache=cache)
 
         display_title = (existing.get("localized_title") or existing.get("title") or source_title) if existing else source_title
 
-        st.markdown(f"### {emoji_for_category(cat)} {display_title}")
-        st.caption(f"카테고리: {cat} · URL: {selected_url}")
-        if existing and source_title and source_title != display_title:
-            st.caption(f"{t('label_source_title')}: {source_title}")
-
-        if show_metrics:
-            st.caption(
-                f"방문 {float(row.get('visits', 0)):.0f} · 평균 체류 {float(row.get('avg_dwell_min', 0)):.2f}분 · score {float(row.get('engagement_score', 0)):.3f}"
-            )
+        st.markdown(f"## {emoji_for_category(cat)} {display_title}")
+        st.caption(
+            f"{cat} ? visits {float(row.get('visits', 0)):.0f} ? dwell {float(row.get('avg_dwell_min', 0)):.2f}m ? "
+            f"score {float(row.get('engagement_score', 0)):.3f} ? [source]({selected_url})"
+        )
+        if source_title and source_title != display_title:
+            st.caption(f"source title: {source_title}")
 
         content_from_csv = (row.get("content", "") or "").strip()
         if content_from_csv:
@@ -992,6 +1026,92 @@ with tab_feed:
             if tags:
                 st.markdown("**태그**")
                 st.write(", ".join(tags))
+
+        def _render_summary_v2(s: Dict[str, Any]) -> None:
+            hook = (s.get("hook") or "").strip().replace("?", "").replace("?", "")
+            if hook:
+                st.markdown("**Hook**")
+                st.info(hook)
+
+            st.markdown("**3-second summary**")
+            st.write((s.get("one_liner") or "").strip())
+
+            kps = [str(x).strip() for x in (s.get("key_points") or []) if str(x).strip()][:3]
+            if kps:
+                st.markdown("**Key points**")
+                st.write("\\n".join([f"- {x}" for x in kps]))
+
+            why = (s.get("why_trending") or "").strip()
+            if not why:
+                visits_v = float(row.get("visits", 0) or 0)
+                dwell_s = float(row.get("avg_dwell_sec", 0) or 0)
+                score_v = row.get("engagement_score", None)
+                if visits_v <= 0 and dwell_s <= 0 and score_v is None:
+                    why = "?? ??? ???? ?? ?? ?? ?? ????? ???? ?? ?????."
+                else:
+                    why = (
+                        f"?? {visits_v:.0f}?? ?? ?? {dwell_s:.1f}?? ?? ??? ??? ?????. "
+                        f"??? ?? {float(score_v or 0):.3f}? ?? ?? ?? ???? ?? ??? ????."
+                    )
+            st.markdown("**Why trending**")
+            st.write(why)
+
+            discussion = (s.get("discussion_prompt") or "").strip()
+            if not discussion:
+                discussion = "???? ???? ? ?? ??? ? ??? ?????"
+            st.markdown("**Discussion prompt**")
+            st.write(discussion)
+
+            rec_base = df_scored.sort_values(
+                ["engagement_score", "visits", "avg_dwell_sec"], ascending=False
+            ).copy()
+            rec_base = rec_base[rec_base["url"] != selected_url].drop_duplicates(subset=["url"], keep="first")
+
+            same_cat = rec_base[rec_base["category"] == cat]
+            others = rec_base[rec_base["category"] != cat]
+            people_df = pd.concat([same_cat, others], ignore_index=True).head(5)
+
+            st.markdown("**People also viewed**")
+            if not people_df.empty:
+                for i, rec in enumerate(people_df.to_dict(orient="records"), start=1):
+                    rec_url = rec.get("url", "")
+                    rec_title = (rec.get("title") or rec_url).strip()
+                    if st.button(f"{i}. {rec_title}", key=f"pav_open::{cache_key}::{i}"):
+                        open_item(rec_url)
+            else:
+                st.caption("?? ??? ????.")
+
+            interest_set = set(st.session_state.get("interest_cats", []) or [])
+            top_interest = rec_base[rec_base["category"].isin(interest_set)] if interest_set else rec_base
+            top_interest = top_interest.head(50)
+            next_top = top_interest.head(4)
+            rand_pool = rec_base.head(20)
+            used = set(next_top["url"].tolist()) if not next_top.empty else set()
+            rand_pool = rand_pool[~rand_pool["url"].isin(used)]
+            rand_pick = rand_pool.sample(n=1, random_state=(abs(hash(cache_key)) % 100000)) if len(rand_pool) > 0 else rand_pool
+            next_df = pd.concat([next_top, rand_pick], ignore_index=True).drop_duplicates(subset=["url"], keep="first")
+            if len(next_df) < 5:
+                extra = rec_base[~rec_base["url"].isin(next_df["url"].tolist())].head(5 - len(next_df))
+                next_df = pd.concat([next_df, extra], ignore_index=True)
+            next_df = next_df.head(5)
+
+            st.markdown("**Next up**")
+            if not next_df.empty:
+                for i, rec in enumerate(next_df.to_dict(orient="records"), start=1):
+                    rec_url = rec.get("url", "")
+                    rec_title = (rec.get("title") or rec_url).strip()
+                    if st.button(f"{i}. {rec_title}", key=f"next_open::{cache_key}::{i}"):
+                        open_item(rec_url)
+            else:
+                st.caption("?? ??? ????.")
+
+            full = (s.get("summary") or "").strip()
+            if full:
+                with st.expander("Summary", expanded=False):
+                    st.write(full)
+            tags = (s.get("tags") or [])
+            if tags:
+                st.caption("#" + " #".join([str(x) for x in tags[:8]]))
 
         def _build_summary() -> Optional[Dict[str, Any]]:
             """Fetch content (if needed) and build a summary. Returns summary dict or None."""
@@ -1037,88 +1157,72 @@ with tab_feed:
                     st.error(f"요약 실패: {e}")
                     return None
 
+        api_ready = bool(api_key)
         if existing:
-            st.success("요약이 준비되어 있어요 ✅")
-            _render_summary(existing)
+            st.success("??? ???? ???")
+            _render_summary_v2(existing)
         else:
-            # Auto summarize on open (portal-like), but allow manual retry.
-            did_flag = f"_auto_summary_done::{selected_url}"
-            if auto_summarize and api_key and not st.session_state.get(did_flag, False):
+            if not api_ready:
+                st.info("OPENAI_API_KEY? ?? ?? ???? ??? ?????. AI ?? ??? ???????.")
+                fallback_base = content_from_csv or source_title
+                fallback = {
+                    "url": selected_url,
+                    "title": source_title,
+                    "localized_title": source_title,
+                    "hook": snippet_from_content(fallback_base, 80).replace("?", "."),
+                    "one_liner": snippet_from_content(fallback_base, 120),
+                    "key_points": [
+                        snippet_from_content(fallback_base, 70),
+                        "?? ???? ????? ??? ?????.",
+                        "???? ?? ?? ????? ?????.",
+                    ],
+                    "why_trending": "",
+                    "discussion_prompt": "A? B ? ??? ? ?????: ?? ? vs ?? ???",
+                    "summary": snippet_from_content(fallback_base, 240),
+                    "tags": [],
+                    "sources": [selected_url],
+                }
+                _render_summary_v2(fallback)
+
+            did_flag = f"_auto_summary_done::{cache_key}"
+            if auto_summarize and api_ready and not st.session_state.get(did_flag, False):
                 st.session_state[did_flag] = True
                 summary = _build_summary()
                 if summary is None:
-                    # allow retry if it failed
                     st.session_state[did_flag] = False
                 else:
-                    cache[selected_url] = summary
+                    set_cached_summary(selected_url, summary, language=current_lang, age_group=current_age, cache=cache)
                     st.session_state["summary_cache"] = cache
                     st.rerun()
 
-            st.warning("아직 요약이 없습니다. 아래 버튼으로 만들 수 있어요.")
-            if st.button("⚡ 3초 요약 만들기", type="primary"):
-                # reset auto flag so manual retry always runs
+            st.warning("?? ??? ????. ?? ???? ??? ? ???.")
+            if st.button("3? ?? ???", type="primary", disabled=not api_ready, key=f"dlg_make_summary::{cache_key}"):
                 st.session_state[did_flag] = True
                 summary = _build_summary()
                 if summary:
-                    cache[selected_url] = summary
+                    set_cached_summary(selected_url, summary, language=current_lang, age_group=current_age, cache=cache)
                     st.session_state["summary_cache"] = cache
-                    st.success("완료! 이제 카드에도 한줄 요약이 표시됩니다.")
+                    st.success("?? ?? ??")
                     st.rerun()
 
-        # Save & generate
+        # 9) Actions area
         cache = st.session_state.get("summary_cache", {})
-        if selected_url in cache:
-            s = cache[selected_url]
-            c1, c2, c3 = st.columns([1, 1.2, 0.9])
-            with c1:
-                if st.button("📌 저장(선택 목록에 추가)"):
+        s = get_cached_summary(selected_url, language=current_lang, age_group=current_age, cache=cache)
+        if s:
+            st.markdown("**Actions**")
+            a1, a2, a3, a4 = st.columns([1.1, 1, 1, 0.8])
+            with a1:
+                if st.button("Save", key=f"dlg_save::{cache_key}", type="primary"):
                     add_to_selection(s)
-                    st.success("저장 완료!")
-            with c2:
-                if admin_mode:
-                    # Admin-only: SEO export (static HTML with meta tags)
-                    lang_now = st.session_state.get("ui_lang", "ko")
-                    labels = {
-                        "ko": {"hook": "훅", "src_title": "원문 제목", "one": "한줄 요약", "sum": "요약", "kp": "핵심 포인트", "tags": "태그", "src": "Sources"},
-                        "en": {"hook": "Hook", "src_title": "Source title", "one": "One-liner", "sum": "Summary", "kp": "Key points", "tags": "Tags", "src": "Sources"},
-                        "ja": {"hook": "フック", "src_title": "元のタイトル", "one": "一言", "sum": "要約", "kp": "要点", "tags": "タグ", "src": "Sources"},
-                        "es": {"hook": "Gancho", "src_title": "Título original", "one": "Frase", "sum": "Resumen", "kp": "Puntos clave", "tags": "Etiquetas", "src": "Sources"},
-                    }.get(lang_now, {"hook": "Hook", "src_title": "Source title", "one": "One-liner", "sum": "Summary", "kp": "Key points", "tags": "Tags", "src": "Sources"})
-
-                    title_for_export = (s.get("localized_title") or s.get("title") or source_title or selected_url).strip()
-                    desc_for_export = (s.get("one_liner") or s.get("summary") or "").strip()[:180]
-                    body_html = "".join(
-                        [
-                            f"<h2>{html.escape(labels['one'])}</h2><p>{html.escape((s.get('one_liner') or '').strip())}</p>",
-                            f"<h2>{html.escape(labels['sum'])}</h2><p>{html.escape((s.get('summary') or '').strip())}</p>",
-                            f"<h2>{html.escape(labels['kp'])}</h2><ul>" + "".join([f"<li>{html.escape(str(x))}</li>" for x in (s.get('key_points') or [])]) + "</ul>",
-                            f"<h2>{html.escape(labels['tags'])}</h2><p>" + ", ".join([html.escape(str(x)) for x in (s.get('tags') or [])]) + "</p>",
-                            f"<h2>{html.escape(labels['src'])}</h2><p><a href='{html.escape(selected_url)}'>{html.escape(selected_url)}</a></p>",
-                        ]
-                    )
-
-                    seo_page = SEOPage(
-                        title=title_for_export,
-                        description=desc_for_export,
-                        lang=lang_now,
-                        canonical_url=selected_url,
-                        body_html=body_html,
-                    )
-                    html_text = render_html(seo_page)
-                    st.download_button(
-                        t("btn_export_html"),
-                        data=html_text,
-                        file_name=f"staypick_{slugify(title_for_export)}_{lang_now}.html",
-                        mime="text/html",
-                    )
-                else:
-                    # General users: share/link actions instead of SEO export.
-                    st.markdown("**공유 링크**")
+                    st.success("Saved.")
+            with a2:
+                if st.button("Copy link", key=f"dlg_copy::{cache_key}"):
                     st.code(selected_url)
-                    st.markdown(f"[🔗 원문 열기]({selected_url})")
-
-            with c3:
-                if st.button("🧹 닫기"):
+                    st.caption("Link ready to copy.")
+            with a3:
+                st.markdown(f"[Open source]({selected_url})")
+            with a4:
+                if st.button("Close", key=f"dlg_close::{cache_key}"):
                     st.session_state["open_dialog"] = False
                     st.rerun()
 
@@ -1402,8 +1506,14 @@ if admin_mode and tab_insights is not None:
                 metrics = {"visits": float(row.get("visits", 0)), "avg_dwell_sec": float(row.get("avg_dwell_sec", 0))}
                 content_from_csv = (row.get("content", "") or "").strip()
 
-                if url in cache:
-                    summaries.append(cache[url])
+                cached = get_cached_summary(
+                    url,
+                    language=current_summary_language(),
+                    age_group=st.session_state.get("age_group", "general"),
+                    cache=cache,
+                )
+                if cached:
+                    summaries.append(cached)
                     progress.progress(i / len(rows), text="진행 중...")
                     continue
 
@@ -1426,10 +1536,16 @@ if admin_mode and tab_insights is not None:
                             title=page_title,
                             content=text,
                             metrics=metrics,
-                            language=st.session_state.get("ui_lang", "ko"),
+                            language=current_summary_language(),
                             age_group=st.session_state.get("age_group", "general"),
                         )
-                        cache[url] = summary
+                        set_cached_summary(
+                            url,
+                            summary,
+                            language=current_summary_language(),
+                            age_group=st.session_state.get("age_group", "general"),
+                            cache=cache,
+                        )
                         summaries.append(summary)
                     except Exception as e:
                         st.warning(f"요약 실패: {url} · {e}")
