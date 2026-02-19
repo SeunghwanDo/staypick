@@ -220,16 +220,18 @@ div.stButton > button {
 
 /* Shorts rail */
 .short-card {
-  border: 1px solid rgba(49, 51, 63, 0.10);
-  border-radius: 14px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 12px;
   overflow: hidden;
-  background: #fff;
+  background: #0f1014;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.20);
 }
 .short-thumb-wrap {
   width: 100%;
   aspect-ratio: 9 / 16;
-  background: #e9eef5;
+  background: #111;
   overflow: hidden;
+  position: relative;
 }
 .short-thumb-img {
   width: 100%;
@@ -238,12 +240,26 @@ div.stButton > button {
   transition: transform 180ms ease;
 }
 .short-card:hover .short-thumb-img { transform: scale(1.04); }
-.short-body { padding: 8px 9px 10px; }
+.short-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px 10px 9px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.70) 52%, rgba(0,0,0,0.92) 100%);
+}
 .short-title {
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 900;
   line-height: 1.35;
   margin: 0;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+}
+.short-meta {
+  font-size: 11px;
+  color: rgba(255,255,255,0.88);
+  margin-top: 4px;
 }
 .yt-generated-box {
   border: 1px solid rgba(49, 51, 63, 0.14);
@@ -1204,6 +1220,7 @@ def init_state() -> None:
     st.session_state.setdefault("selected_summaries", [])  # list of summary dicts
     st.session_state.setdefault("generated_by_url", {})  # url -> generated markdown + meta
     st.session_state.setdefault("last_generated_content", {})  # quick access for make tab
+    st.session_state.setdefault("generated_history", [])  # my page history
     st.session_state.setdefault("selected_url", "")
     st.session_state.setdefault("open_dialog", False)
     st.session_state.setdefault("search_query", "")
@@ -1634,7 +1651,7 @@ st.caption(t("header_caption"))
 # ---------------------------
 # Tabs (general users first)
 # ---------------------------
-tab_names = [t("tab_feed"), "활용법", t("tab_make")]
+tab_names = [t("tab_feed"), "활용법", t("tab_make"), "마이페이지"]
 if admin_mode:
     tab_names += [t("tab_data"), t("tab_insights"), t("tab_sponsor"), t("tab_global")]
 tabs = st.tabs(tab_names)
@@ -1645,6 +1662,8 @@ _ti += 1
 tab_guide = tabs[_ti]
 _ti += 1
 tab_make = tabs[_ti]
+_ti += 1
+tab_mypage = tabs[_ti]
 _ti += 1
 tab_data = tabs[_ti] if admin_mode else None
 if admin_mode:
@@ -1941,10 +1960,12 @@ with tab_feed:
                     st.markdown(
                         f"""
 <div class="short-card">
-  <div class="short-thumb-wrap">{thumb_html}</div>
-  <div class="short-body">
-    <p class="short-title">{html.escape(s_title[:42] + ('...' if len(s_title) > 42 else ''))}</p>
-    <div class="yt-meta">{html.escape(s_meta)}</div>
+  <div class="short-thumb-wrap">
+    {thumb_html}
+    <div class="short-overlay">
+      <p class="short-title">{html.escape(s_title[:42] + ('...' if len(s_title) > 42 else ''))}</p>
+      <div class="short-meta">{html.escape(s_meta)}</div>
+    </div>
   </div>
 </div>
 """,
@@ -2630,6 +2651,20 @@ with tab_feed:
                     "content": output_md,
                     "meta": generated_map[selected_url]["meta"],
                 }
+                gen_hist = st.session_state.get("generated_history", [])
+                if not isinstance(gen_hist, list):
+                    gen_hist = []
+                gen_hist.append(
+                    {
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "title": display_title,
+                        "url": selected_url,
+                        "format": format_local,
+                        "persona": persona_local,
+                        "content": output_md,
+                    }
+                )
+                st.session_state["generated_history"] = gen_hist[-200:]
                 st.success("생성 결과를 바로 저장했습니다.")
                 st.download_button(
                     "Markdown 다운로드",
@@ -2790,12 +2825,76 @@ with tab_make:
 
             st.markdown("### 결과")
             st.markdown(output_md)
+            gen_hist = st.session_state.get("generated_history", [])
+            if not isinstance(gen_hist, list):
+                gen_hist = []
+            lead_title = str((selected_for_make[0] or {}).get("localized_title") or (selected_for_make[0] or {}).get("title") or "저장 목록 결과")
+            gen_hist.append(
+                {
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "title": f"{lead_title} 외 {max(len(selected_for_make)-1, 0)}개",
+                    "url": "",
+                    "format": format2,
+                    "persona": persona2,
+                    "content": output_md,
+                }
+            )
+            st.session_state["generated_history"] = gen_hist[-200:]
+            st.session_state["last_generated_content"] = {
+                "url": "",
+                "title": lead_title,
+                "content": output_md,
+                "meta": f"{datetime.now().strftime('%Y-%m-%d %H:%M')} · {persona2} · {format2}",
+            }
             st.download_button(
                 "Markdown 다운로드",
                 data=output_md,
                 file_name=f"staypick_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
                 mime="text/markdown",
             )
+
+
+# ---------------------------
+# My Page tab
+# ---------------------------
+with tab_mypage:
+    st.subheader("👤 마이페이지")
+    st.caption("내가 만든 콘텐츠 기록")
+    gen_hist = st.session_state.get("generated_history", [])
+    if not isinstance(gen_hist, list) or not gen_hist:
+        st.info("아직 만든 콘텐츠가 없습니다. 피드 상세에서 만들거나, 만들기 탭에서 생성해보세요.")
+    else:
+        st.caption(f"총 {len(gen_hist)}개")
+        c_m1, c_m2 = st.columns([1, 1])
+        with c_m1:
+            if st.button("최근순 정렬", key="mypage_sort_recent"):
+                st.session_state["_mypage_sort"] = "recent"
+        with c_m2:
+            if st.button("기록 비우기", key="mypage_clear_history"):
+                st.session_state["generated_history"] = []
+                st.session_state["last_generated_content"] = {}
+                st.rerun()
+        items = list(gen_hist)
+        items = list(reversed(items))
+        for i, it in enumerate(items, start=1):
+            created_at = str(it.get("created_at", "") or "")
+            title_txt = str(it.get("title", "") or f"콘텐츠 {i}")
+            format_txt = str(it.get("format", "") or "")
+            persona_txt = str(it.get("persona", "") or "")
+            url_txt = str(it.get("url", "") or "")
+            content_txt = str(it.get("content", "") or "")
+            with st.expander(f"{i}. {title_txt}", expanded=(i == 1)):
+                st.caption(f"{created_at} · {persona_txt} · {format_txt}")
+                if url_txt:
+                    st.markdown(f"[원문 보기]({url_txt})")
+                st.markdown(content_txt)
+                st.download_button(
+                    "Markdown 다운로드",
+                    data=content_txt,
+                    file_name=f"staypick_mypage_{i}_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                    mime="text/markdown",
+                    key=f"mypage_dl_{i}",
+                )
 
 
 # ---------------------------
