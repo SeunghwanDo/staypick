@@ -193,6 +193,19 @@ div.stButton > button {
   color: rgba(49, 51, 63, 0.72);
   margin-top: 6px;
 }
+.yt-channel-line {
+  display:flex;
+  align-items:center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.yt-channel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ff3d00;
+  display: inline-block;
+}
 .yt-sub {
   font-size: 12px;
   color: rgba(49, 51, 63, 0.86);
@@ -231,6 +244,12 @@ div.stButton > button {
   font-weight: 800;
   line-height: 1.35;
   margin: 0;
+}
+.yt-generated-box {
+  border: 1px solid rgba(49, 51, 63, 0.14);
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px 12px;
 }
 
 /* Mobile: stack columns to 1 */
@@ -1112,6 +1131,8 @@ def init_state() -> None:
     st.session_state.setdefault("hidden_urls", [])
     st.session_state.setdefault("hidden_recent", [])
     st.session_state.setdefault("selected_summaries", [])  # list of summary dicts
+    st.session_state.setdefault("generated_by_url", {})  # url -> generated markdown + meta
+    st.session_state.setdefault("last_generated_content", {})  # quick access for make tab
     st.session_state.setdefault("selected_url", "")
     st.session_state.setdefault("open_dialog", False)
     st.session_state.setdefault("search_query", "")
@@ -1410,6 +1431,11 @@ def open_item(url: str) -> None:
     st.session_state["item_opened_at"] = time.time()
     st.session_state["open_dialog"] = True
     st.rerun()
+
+
+def _is_youtube_url(url: str) -> bool:
+    u = str(url or "").lower()
+    return ("youtube.com/watch" in u) or ("youtu.be/" in u) or ("youtube.com/shorts/" in u)
 
 
 def mark_not_interested(url: str, title: str = "") -> None:
@@ -1841,7 +1867,7 @@ with tab_feed:
 """,
                         unsafe_allow_html=True,
                     )
-                    if st.button("Play", key=f"short_open_{abs(hash(s_url)) % 100000}_{i}"):
+                    if st.button("시청", key=f"short_open_{abs(hash(s_url)) % 100000}_{i}"):
                         open_item(s_url)
             if len(shorts_items) > short_show:
                 if st.button("Shorts 더보기", key="btn_more_shorts"):
@@ -1902,7 +1928,7 @@ with tab_feed:
         <span class="rank-badge">TOP {i}</span><span class="sp-kicker">{html.escape(cat)}</span>
       </div>
       <p class="yt-title">{html.escape(display_title)}</p>
-      <div class="yt-meta">{html.escape(yt_meta)}</div>
+      <div class="yt-channel-line"><span class="yt-channel-dot"></span><span class="yt-meta">{html.escape(yt_meta)}</span></div>
       <div class="yt-sub">{html.escape(teaser or '눌러서 3초 요약 보기')}</div>
       <div class="sp-chips">{chips_html}</div>
     </div>
@@ -1916,10 +1942,10 @@ with tab_feed:
 
                     c1, c2 = st.columns([1, 1])
                     with c1:
-                        if st.button(t("btn_view"), key=f"best_open_{i}"):
+                        if st.button("시청", key=f"best_open_{i}"):
                             open_item(url)
                     with c2:
-                        if s and st.button(t("btn_save"), key=f"best_save_{i}"):
+                        if s and st.button("저장", key=f"best_save_{i}"):
                             add_to_selection(s)
                             st.toast("저장됨(선택 목록)")
             if len(long_items) > long_show:
@@ -2008,7 +2034,7 @@ with tab_feed:
   <div class="yt-body">
       <div class="yt-topline"><span class="rank-badge">TOP {rank}</span><span class="sp-kicker">{html.escape(selected_cat)}</span></div>
       <p class="yt-title">{html.escape(display_title)}</p>
-      <div class="yt-meta">{html.escape(yt_meta)}</div>
+      <div class="yt-channel-line"><span class="yt-channel-dot"></span><span class="yt-meta">{html.escape(yt_meta)}</span></div>
       <div class="yt-sub">{html.escape(teaser or '미리보기 없음 · 눌러서 3초 요약')}</div>
       <div class="sp-chips">{chips_html}</div>
     </div>
@@ -2020,7 +2046,7 @@ with tab_feed:
                 if show_metrics:
                     st.caption(f"방문 {float(row.get('visits', 0)):.0f} · 체류 {float(row.get('avg_dwell_min', 0)):.2f}분")
 
-                if st.button(t("btn_open"), key=f"cat_open_{selected_cat}_{rank}"):
+                if st.button("시청", key=f"cat_open_{selected_cat}_{rank}"):
                     open_item(url)
 
     with side_col:
@@ -2108,6 +2134,25 @@ with tab_feed:
         )
         if source_title and source_title != display_title:
             st.caption(f"source title: {source_title}")
+        if _is_youtube_url(selected_url):
+            st.video(selected_url)
+
+        generated_map = st.session_state.get("generated_by_url", {}) or {}
+        generated_item = generated_map.get(selected_url)
+        if isinstance(generated_item, dict) and str(generated_item.get("content", "")).strip():
+            st.markdown("**방금 만든 콘텐츠**")
+            st.markdown(
+                f"""
+<div class="yt-generated-box">
+  <div class="small-muted">{html.escape(str(generated_item.get("meta", "")))}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+            st.markdown(str(generated_item.get("content", "")))
+            if st.button("만들기 탭에서 이어서 보기", key=f"dlg_jump_make::{cache_key}"):
+                st.session_state["_jump_to_make"] = True
+                st.rerun()
 
         content_from_csv = (row.get("content", "") or "").strip()
         content_desc = (row.get("description", "") or "").strip()
@@ -2515,6 +2560,21 @@ with tab_feed:
 
                 st.markdown("#### 결과")
                 st.markdown(output_md)
+                generated_map = st.session_state.get("generated_by_url", {})
+                if not isinstance(generated_map, dict):
+                    generated_map = {}
+                generated_map[selected_url] = {
+                    "content": output_md,
+                    "meta": f"{datetime.now().strftime('%Y-%m-%d %H:%M')} · {persona_local} · {format_local}",
+                }
+                st.session_state["generated_by_url"] = generated_map
+                st.session_state["last_generated_content"] = {
+                    "url": selected_url,
+                    "title": display_title,
+                    "content": output_md,
+                    "meta": generated_map[selected_url]["meta"],
+                }
+                st.success("생성 결과를 바로 저장했습니다.")
                 st.download_button(
                     "Markdown 다운로드",
                     data=output_md,
@@ -2538,6 +2598,13 @@ with tab_make:
     if len(selected_list) > make_limit:
         st.warning(f"Current plan allows up to {make_limit} saved items for batch generation.")
     st.caption("피드에서 마음에 드는 글을 **저장**하면, 여기서 묶어서 만들 수 있어요.")
+    last_generated = st.session_state.get("last_generated_content", {}) or {}
+    if isinstance(last_generated, dict) and str(last_generated.get("content", "")).strip():
+        with st.expander("최근 생성 결과", expanded=True):
+            st.caption(str(last_generated.get("meta", "")))
+            if last_generated.get("title"):
+                st.markdown(f"**{last_generated.get('title')}**")
+            st.markdown(str(last_generated.get("content", "")))
 
     if not selected_list:
         st.info("아직 저장한 항목이 없습니다. 피드에서 '저장'을 눌러보세요.")
