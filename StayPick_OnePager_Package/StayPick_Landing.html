@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StayPick | 서비스 & 비용 안내</title>
+  <meta name="description" content="StayPick 서비스 소개, 요금제, 수익모델을 한 페이지에서 확인하세요." />
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --ink: #1f1f23;
+      --muted: #5d616d;
+      --card: #fffdf9;
+      --line: rgba(31, 31, 35, 0.12);
+      --brand: #ef5d3d;
+      --brand-2: #1f7a8c;
+      --good: #2a7f62;
+      --shadow: 0 16px 40px rgba(21, 26, 35, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Pretendard Variable", "SUIT Variable", "Noto Sans KR", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 85% -5%, rgba(31, 122, 140, 0.24), transparent 38%),
+        radial-gradient(circle at -10% 20%, rgba(239, 93, 61, 0.22), transparent 42%),
+        var(--bg);
+      line-height: 1.5;
+    }
+
+    .wrap { width: min(1120px, 92vw); margin: 0 auto; }
+    .fade { opacity: 0; transform: translateY(16px); animation: rise 560ms ease forwards; }
+    .d1 { animation-delay: 80ms; }
+    .d2 { animation-delay: 150ms; }
+    .d3 { animation-delay: 220ms; }
+    .d4 { animation-delay: 300ms; }
+    @keyframes rise {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    header { padding: 22px 0 16px; }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(10px);
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 900; letter-spacing: -0.02em;
+    }
+    .dot {
+      width: 14px; height: 14px; border-radius: 99px;
+      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+      box-shadow: 0 0 0 4px rgba(239, 93, 61, 0.2);
+    }
+    .top-note { color: var(--muted); font-size: 13px; }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 18px;
+      padding: 18px 0 12px;
+    }
+    .hero-card {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--card);
+      box-shadow: var(--shadow);
+      padding: 28px;
+    }
+    .eyebrow {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 800;
+      color: #30425d;
+      border: 1px solid rgba(48, 66, 93, 0.22);
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: #edf3ff;
+    }
+    h1 {
+      margin: 12px 0 10px;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }
+    .hero p { color: var(--muted); margin: 0; }
+    .hero-grid {
+      margin-top: 16px;
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    }
+    .mini {
+      border: 1px dashed rgba(31, 122, 140, 0.38);
+      border-radius: 12px;
+      padding: 10px;
+      background: #f6fbfc;
+      font-size: 13px;
+    }
+    .kpi {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .kpi div {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      background: white;
+    }
+    .kpi strong { display: block; font-size: 22px; }
+    .kpi span { color: var(--muted); font-size: 12px; }
+
+    section { padding: 20px 0; }
+    .h2 {
+      margin: 0 0 12px;
+      font-size: clamp(22px, 3vw, 32px);
+      letter-spacing: -0.02em;
+    }
+    .lead { margin: 0 0 16px; color: var(--muted); }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      background: var(--card);
+    }
+    .card h3 { margin: 0 0 8px; font-size: 18px; }
+    .card p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .pricing {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+    .controls {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;
+    }
+    .controls button {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f8f8fb;
+      padding: 8px 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .controls button.active {
+      background: #1f1f23; color: #fff; border-color: #1f1f23;
+    }
+    .plan-grid {
+      display: grid;
+      grid-template-columns: 0.8fr 1fr 1fr;
+      gap: 10px;
+    }
+    .plan {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      background: #fff;
+    }
+    .plan.feature {
+      background: #f6f9ff;
+      font-weight: 700;
+    }
+    .price { font-size: 28px; font-weight: 900; letter-spacing: -0.02em; margin: 8px 0 2px; }
+    .sub { color: var(--muted); font-size: 12px; }
+    ul { margin: 10px 0 0 16px; padding: 0; }
+    li { margin: 4px 0; }
+    .badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(42, 127, 98, 0.35);
+      color: var(--good);
+      background: #edfbf5;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .mono {
+      font-family: "JetBrains Mono", "Consolas", monospace;
+      font-size: 13px;
+      color: #2f3441;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      background: #fafafb;
+    }
+
+    .cta {
+      margin: 22px 0 34px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 20px;
+      background: linear-gradient(135deg, rgba(31, 122, 140, 0.14), rgba(239, 93, 61, 0.14));
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      border: none;
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-weight: 800;
+      background: #1f1f23;
+      color: #fff;
+      text-decoration: none;
+      display: inline-block;
+    }
+    .muted-sm { color: var(--muted); font-size: 13px; margin-top: 6px; }
+
+    @media (max-width: 920px) {
+      .hero { grid-template-columns: 1fr; }
+      .cards { grid-template-columns: 1fr; }
+      .kpi { grid-template-columns: 1fr; }
+      .plan-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap fade d1">
+    <div class="topbar">
+      <div class="brand"><span class="dot"></span>StayPick</div>
+      <div class="top-note">서비스 소개 + 요금 + 수익모델 원페이지</div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero fade d2">
+      <article class="hero-card">
+        <span class="eyebrow">Content Growth System</span>
+        <h1>데이터에서 바로 뽑아,<br />요약하고, 만들고, 수익화하는 콘텐츠 운영</h1>
+        <p>
+          StayPick은 상위 체류 콘텐츠를 자동 선별하고, AI 요약/재가공/SEO 배포까지 연결합니다.
+          운영자는 스폰서·어필리에이트 성과를 함께 관리해 수익화를 검증할 수 있습니다.
+        </p>
+        <div class="hero-grid">
+          <div class="mini">Top 콘텐츠 자동 선별<br />방문 + 체류 기반</div>
+          <div class="mini">요약/새글 일괄 생성<br />연령/페르소나 튜닝</div>
+          <div class="mini">B2B 리포트 + SEO ZIP<br />확장형 구조</div>
+        </div>
+      </article>
+      <aside class="hero-card">
+        <h2 class="h2" style="margin-top:0;">핵심 가치</h2>
+        <div class="kpi">
+          <div><strong>1회 입력</strong><span>CSV/URL 업로드</span></div>
+          <div><strong>즉시 실행</strong><span>요약 + 재가공</span></div>
+          <div><strong>성과 측정</strong><span>광고/전환 로그</span></div>
+        </div>
+        <p class="muted-sm">관리 탭: 데이터 · 인사이트 · 스폰서 · 글로벌/SEO</p>
+      </aside>
+    </section>
+
+    <section class="fade d3">
+      <h2 class="h2">서비스 구성</h2>
+      <p class="lead">실무에서 바로 쓰는 흐름으로 설계했습니다.</p>
+      <div class="cards">
+        <article class="card">
+          <h3>1) 포털형 피드</h3>
+          <p>상위 콘텐츠를 빠르게 탐색하고 저장합니다. 클릭/체류 이벤트로 추천 품질을 계속 보정합니다.</p>
+        </article>
+        <article class="card">
+          <h3>2) AI 요약·재가공</h3>
+          <p>저장한 항목으로 새 글/스크립트를 생성합니다. 언어, 연령대, 톤을 맞춰 생산성을 끌어올립니다.</p>
+        </article>
+        <article class="card">
+          <h3>3) 수익화·배포</h3>
+          <p>스폰서/어필리에이트 성과를 집계하고, SEO HTML ZIP 및 Programmatic SEO로 외부 유입을 확장합니다.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="fade d4">
+      <h2 class="h2">요금제 & 비용</h2>
+      <p class="lead">앱의 A/B 수익화 프로필과 동일하게, 가격 패키지를 전환해 비교할 수 있습니다.</p>
+      <div class="pricing">
+        <div class="controls">
+          <button id="profileA" class="active" type="button">Profile A (전환형)</button>
+          <button id="profileB" type="button">Profile B (가치형)</button>
+        </div>
+
+        <div class="plan-grid">
+          <div class="plan feature">
+            플랜
+            <ul>
+              <li>광고</li>
+              <li>Save 한도</li>
+              <li>Make 한도</li>
+              <li>AI 일일 크레딧</li>
+            </ul>
+          </div>
+          <div class="plan">
+            <div class="badge">Basic</div>
+            <div class="price" id="basicMonthly">4,900원</div>
+            <div class="sub" id="basicYearly">연 47,040원 (20% 할인)</div>
+            <ul>
+              <li>광고 제거</li>
+              <li>최대 300</li>
+              <li>최대 30</li>
+              <li>최대 300</li>
+            </ul>
+          </div>
+          <div class="plan">
+            <div class="badge">Pro</div>
+            <div class="price" id="proMonthly">9,900원</div>
+            <div class="sub" id="proYearly">연 95,040원 (20% 할인)</div>
+            <ul>
+              <li>광고 제거 + 고급 기능</li>
+              <li>최대 1000</li>
+              <li>최대 100</li>
+              <li>최대 1000</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="fade d4">
+      <h2 class="h2">수익모델</h2>
+      <p class="lead">구독 + 광고 + 어필리에이트 + B2B 리포트로 매출원을 분산합니다.</p>
+      <div class="cards">
+        <article class="card">
+          <h3>구독 매출 (MRR)</h3>
+          <p>Free → Basic/Pro 업셀 퍼널을 기록하고, 실측 전환율을 기반으로 월 매출을 자동 추정합니다.</p>
+        </article>
+        <article class="card">
+          <h3>광고/어필리에이트</h3>
+          <p>CPC/CPA 타입별 추정식으로 총매출을 계산합니다. `eCPM`, `RPM`, `ARPU` 지표를 CSV로 내보냅니다.</p>
+        </article>
+        <article class="card">
+          <h3>B2B 리포팅</h3>
+          <p>광고주/파트너사 공유용 성과 리포트를 Pro 플랜에서 바로 다운로드해 세일즈 자료로 활용합니다.</p>
+        </article>
+      </div>
+      <div class="mono" style="margin-top:12px;">
+        KPI 예시: MRR Total = MRR Subscription + MRR Ads<br />
+        ARPU = MRR Total / MAU<br />
+        RPM = (Total Revenue / Impressions) * 1000
+      </div>
+    </section>
+
+    <section class="cta fade d4">
+      <div>
+        <strong>다음 단계</strong>
+        <div class="muted-sm">이 페이지를 제안서/데모 첫 화면으로 사용하고, 제품 탭과 연결해 전환 흐름을 확인하세요.</div>
+      </div>
+      <a class="btn" href="../README.md">프로젝트 문서 보기</a>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const pricing = {
+        A: { basic: 4900, pro: 9900 },
+        B: { basic: 5900, pro: 12900 }
+      };
+      const discount = 0.20;
+
+      const el = {
+        a: document.getElementById("profileA"),
+        b: document.getElementById("profileB"),
+        basicMonthly: document.getElementById("basicMonthly"),
+        basicYearly: document.getElementById("basicYearly"),
+        proMonthly: document.getElementById("proMonthly"),
+        proYearly: document.getElementById("proYearly")
+      };
+
+      function fmt(n) {
+        return n.toLocaleString("ko-KR") + "원";
+      }
+
+      function paint(profile) {
+        const p = pricing[profile];
+        const annualMul = 1 - discount;
+        el.basicMonthly.textContent = fmt(p.basic);
+        el.proMonthly.textContent = fmt(p.pro);
+        el.basicYearly.textContent = "연 " + fmt(Math.floor(p.basic * 12 * annualMul)) + " (20% 할인)";
+        el.proYearly.textContent = "연 " + fmt(Math.floor(p.pro * 12 * annualMul)) + " (20% 할인)";
+        el.a.classList.toggle("active", profile === "A");
+        el.b.classList.toggle("active", profile === "B");
+      }
+
+      el.a.addEventListener("click", () => paint("A"));
+      el.b.addEventListener("click", () => paint("B"));
+      paint("A");
+    })();
+  </script>
+</body>
+</html>
