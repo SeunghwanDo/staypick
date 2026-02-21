@@ -229,6 +229,8 @@ def compute_engagement_score(
         weight_dwell /= total
 
     out = df.copy()
+    out["visits"] = pd.to_numeric(out.get("visits", 0), errors="coerce").fillna(0.0)
+    out["avg_dwell_sec"] = pd.to_numeric(out.get("avg_dwell_sec", 0), errors="coerce").fillna(0.0)
 
     def norm(series: pd.Series) -> pd.Series:
         s = series.astype(float)
